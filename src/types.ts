@@ -1,11 +1,28 @@
+import type { Readable } from "node:stream";
+
 import type { AccessKeyComponents, AccessKeyDocumentTypeForModel, AccessKeyModel } from "./validation/access-key";
 
 /**
- * Accepts a local path, an HTTP(S) URL, or in-memory document bytes for extraction.
+ * Accepts a local path, an HTTP(S) URL, in-memory document bytes, a `Readable`, or an async byte iterable for extraction.
  *
  * @since 0.2.0
  */
-export type DocumentInput = string | ArrayBuffer | Uint8Array;
+export type DocumentInput = string | ArrayBuffer | Uint8Array | Readable | AsyncIterable<Uint8Array>;
+
+/**
+ * Selects where the bytes of a streamed input are held while the stream is consumed.
+ *
+ * `memory` accumulates the stream in process memory under `maxFileSizeBytes`. `file` writes every chunk to an
+ * extractor-owned temporary file as it arrives. `auto` keeps the stream in memory until
+ * `streamMemoryThresholdBytes` would be exceeded and then migrates the bytes already received to a temporary
+ * file without restarting the read.
+ *
+ * The policy applies only to `Readable` and async-iterable inputs. Bytes supplied as `ArrayBuffer`,
+ * `Uint8Array`, or `Buffer` are already resident in memory and are never written to disk.
+ *
+ * @since 0.6.0
+ */
+export type StreamStorage = "memory" | "file" | "auto";
 
 /**
  * Preserves the original PDF-oriented input name as a compatibility alias.
@@ -79,9 +96,23 @@ export interface ExtractOptions {
    */
   maxPages?: number;
   /**
-   * Limits the accepted local, remote, or in-memory document size in bytes.
+   * Limits the accepted local, remote, streamed, or in-memory document size in bytes.
    */
   maxFileSizeBytes?: number;
+  /**
+   * Selects where a `Readable` or async-iterable input is held while it is consumed, defaulting to `auto`.
+   *
+   * Path, URL, and in-memory inputs ignore this option.
+   */
+  streamStorage?: StreamStorage;
+  /**
+   * Sets the byte count an `auto` stream may hold in memory before it migrates to a temporary file, from one byte through 1 GiB and defaulting to 8 MiB.
+   */
+  streamMemoryThresholdBytes?: number;
+  /**
+   * Selects an existing directory for extractor-owned temporary stream files, defaulting to the system temporary directory.
+   */
+  streamTempDirectory?: string;
   /**
    * Limits the number of pixels allocated for each rendered page.
    */

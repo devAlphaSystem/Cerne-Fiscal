@@ -1,6 +1,6 @@
 # Referência da API
 
-Esta referência descreve os exports de `src/index.ts` e o contrato implementado pela versão `0.5.0`.
+Esta referência descreve os exports de `src/index.ts` e o contrato implementado pela versão `0.6.0`.
 
 ## Imports
 
@@ -25,20 +25,22 @@ Falhas de opção, entrada, download, parsing, deadline e processamento são rep
 ## `DocumentInput`
 
 ```ts
-type DocumentInput = string | ArrayBuffer | Uint8Array;
+type DocumentInput = string | ArrayBuffer | Uint8Array | Readable | AsyncIterable<Uint8Array>;
 type PdfInput = DocumentInput; // alias de compatibilidade
 ```
 
 Interpretação da entrada:
 
-| Valor                                         | Comportamento                       |
-| --------------------------------------------- | ----------------------------------- |
-| `string` iniciada por `http://` ou `https://` | download remoto                     |
-| outra `string` sem esquema URI                | caminho de arquivo local            |
-| caminho Windows com letra de unidade          | caminho local, não URL              |
-| `ArrayBuffer`                                 | os bytes são copiados e validados   |
-| `Uint8Array`                                  | os bytes são copiados e validados   |
-| `Buffer`                                      | aceito porque herda de `Uint8Array` |
+| Valor                                         | Comportamento                                             |
+| --------------------------------------------- | --------------------------------------------------------- |
+| `string` iniciada por `http://` ou `https://` | download remoto                                           |
+| outra `string` sem esquema URI                | caminho de arquivo local                                  |
+| caminho Windows com letra de unidade          | caminho local, não URL                                    |
+| `ArrayBuffer`                                 | os bytes são copiados e validados                         |
+| `Uint8Array`                                  | os bytes são copiados e validados                         |
+| `Buffer`                                      | aceito porque herda de `Uint8Array`                       |
+| `Readable`                                    | consumido bloco a bloco sob a política de `streamStorage` |
+| `AsyncIterable<Uint8Array>`                   | mesmo caminho do `Readable`                               |
 
 URLs com credenciais embutidas são rejeitadas. Esquemas diferentes de HTTP(S), entradas vazias, diretórios e tipos não previstos produzem erro estruturado. O formato real é detectado pela assinatura dos bytes; a extensão do arquivo e o `Content-Type` remoto não determinam o parser.
 
@@ -52,21 +54,70 @@ Formatos reconhecidos:
 
 Todas as opções são opcionais. O perfil padrão é `balanced`.
 
-| Opção                  | Tipo                                 | Padrão                            | Faixa/regras          | Efeito                                                                      |
-| ---------------------- | ------------------------------------ | --------------------------------- | --------------------- | --------------------------------------------------------------------------- |
-| `performance`          | `"fast" \| "balanced" \| "accurate"` | `"balanced"`                      | valor fechado         | escolhe os defaults e as receitas de renderização                           |
-| `passes`               | `number` inteiro                     | 1 / 2 / 3 por perfil              | 1 a 5                 | limita quantas receitas ordenadas de render/reconhecimento podem ser usadas |
-| `ocr`                  | `"never" \| "fallback" \| "always"`  | `never` / `fallback` / `fallback` | valor fechado         | desativa, usa apenas em páginas sem evidência ou força OCR                  |
-| `maxPages`             | `number` inteiro                     | 10 / 30 / 50                      | 1 a 10.000            | processa somente as primeiras páginas                                       |
-| `maxFileSizeBytes`     | `number` inteiro                     | 31.457.280 (30 MiB)               | 1 a 1.073.741.824     | limita entrada local, remota ou em memória                                  |
-| `maxPixelsPerPage`     | `number` inteiro                     | 8M / 12M / 20M                    | 250.000 a 100.000.000 | limita a área de cada canvas renderizado                                    |
-| `maxSourceImagePixels` | `number` inteiro                     | 40M / 60M / 100M                  | 250.000 a 200.000.000 | limita a área declarada/decodificada da imagem-fonte e imagens do PDF       |
-| `timeoutMs`            | `number` inteiro                     | 30.000 / 120.000 / 300.000        | 0 a 3.600.000         | deadline total; zero desativa o timeout                                     |
-| `stopAfterFirst`       | `boolean`                            | `false`                           | booleano real         | encerra etapas adicionais depois da primeira chave válida                   |
-| `requestHeaders`       | `Readonly<Record<string, string>>`   | ausente                           | somente URL HTTP(S)   | adiciona cabeçalhos à requisição remota                                     |
-| `signal`               | `AbortSignal`                        | ausente                           | objeto compatível     | cancela download e impede novas etapas de reconhecimento                    |
+| Opção                        | Tipo                                 | Padrão                            | Faixa/regras          | Efeito                                                                      |
+| ---------------------------- | ------------------------------------ | --------------------------------- | --------------------- | --------------------------------------------------------------------------- |
+| `performance`                | `"fast" \| "balanced" \| "accurate"` | `"balanced"`                      | valor fechado         | escolhe os defaults e as receitas de renderização                           |
+| `passes`                     | `number` inteiro                     | 1 / 2 / 3 por perfil              | 1 a 5                 | limita quantas receitas ordenadas de render/reconhecimento podem ser usadas |
+| `ocr`                        | `"never" \| "fallback" \| "always"`  | `never` / `fallback` / `fallback` | valor fechado         | desativa, usa apenas em páginas sem evidência ou força OCR                  |
+| `maxPages`                   | `number` inteiro                     | 10 / 30 / 50                      | 1 a 10.000            | processa somente as primeiras páginas                                       |
+| `maxFileSizeBytes`           | `number` inteiro                     | 31.457.280 (30 MiB)               | 1 a 1.073.741.824     | limita entrada local, remota, em stream ou em memória                       |
+| `maxPixelsPerPage`           | `number` inteiro                     | 8M / 12M / 20M                    | 250.000 a 100.000.000 | limita a área de cada canvas renderizado                                    |
+| `maxSourceImagePixels`       | `number` inteiro                     | 40M / 60M / 100M                  | 250.000 a 200.000.000 | limita a área declarada/decodificada da imagem-fonte e imagens do PDF       |
+| `timeoutMs`                  | `number` inteiro                     | 30.000 / 120.000 / 300.000        | 0 a 3.600.000         | deadline total; zero desativa o timeout                                     |
+| `stopAfterFirst`             | `boolean`                            | `false`                           | booleano real         | encerra etapas adicionais depois da primeira chave válida                   |
+| `streamStorage`              | `"memory" \| "file" \| "auto"`       | `"auto"`                          | valor fechado         | escolhe onde um stream fica enquanto é consumido                            |
+| `streamMemoryThresholdBytes` | `number` inteiro                     | 8.388.608 (8 MiB)                 | 1 a 1.073.741.824     | memória máxima de um stream `auto` antes de migrar para arquivo temporário  |
+| `streamTempDirectory`        | `string`                             | temporário do sistema             | diretório existente   | escolhe onde os temporários do extrator são criados                         |
+| `requestHeaders`             | `Readonly<Record<string, string>>`   | ausente                           | somente URL HTTP(S)   | adiciona cabeçalhos à requisição remota                                     |
+| `signal`                     | `AbortSignal`                        | ausente                           | objeto compatível     | cancela download, leitura do stream e novas etapas de reconhecimento        |
 
 Os valores separados por `/` correspondem a `fast`, `balanced` e `accurate`, nessa ordem. Uma opção explícita substitui somente o default correspondente; por exemplo, `performance: "fast", ocr: "always"` é uma combinação aceita.
+
+### Entradas em stream
+
+```js
+const result = await extractNFeAccessKeys(readable, {
+  streamStorage: "auto",
+  streamMemoryThresholdBytes: 1024 * 1024,
+  maxFileSizeBytes: 25 * 1024 * 1024,
+  signal,
+});
+```
+
+```ts
+type StreamStorage = "memory" | "file" | "auto";
+```
+
+| Política | Onde os bytes ficam                                                                                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `memory` | Acumula na memória do processo, respeitando `maxFileSizeBytes`. Nenhum arquivo é criado.                                                                                              |
+| `file`   | Grava cada bloco em um temporário do extrator assim que ele chega. O documento completo nunca é montado na memória durante o recebimento.                                             |
+| `auto`   | Padrão. Mantém na memória até `streamMemoryThresholdBytes`; ao ultrapassá-lo, cria o temporário, grava os blocos já recebidos e direciona os seguintes ao arquivo, sem reler a fonte. |
+
+Regras que valem para as três políticas:
+
+- os blocos são puxados um a um e cada gravação é aguardada antes do próximo bloco, então o produtor é limitado pela velocidade do destino (backpressure real);
+- o tamanho aceito vem dos bytes que realmente chegaram, nunca de um comprimento anunciado pelo produtor; ao ultrapassar `maxFileSizeBytes` a leitura é interrompida com `FILE_TOO_LARGE`;
+- todo bloco precisa ser `Uint8Array` ou `Buffer`; qualquer outro tipo produz `INVALID_INPUT`;
+- o `signal` é verificado antes da leitura, entre blocos e após cada gravação, e um `Readable` é destruído ao abortar;
+- em `auto`, a memória retida é no máximo o limite configurado mais o bloco em processamento.
+
+A política não se aplica a `Buffer`, `Uint8Array`, `ArrayBuffer`, caminho local ou URL. Bytes já recebidos em memória não são gravados em disco, porque a alocação já aconteceu; o download remoto continua com o comportamento anterior.
+
+#### O que `file` e `auto` economizam neste pacote
+
+O PDF.js e o decodificador de imagem exigem o documento completo em um único buffer. Um stream gravado em temporário é lido de volta no momento em que o parsing começa, em uma alocação de tamanho exato. O ganho está no recebimento: enquanto o produtor entrega os bytes — que é a fase longa em um upload — o processo segura no máximo o bloco atual em vez do documento inteiro, e a alocação final é exata em vez do excesso que um buffer crescente deixaria. O pico durante o parsing é o mesmo das outras entradas.
+
+#### Arquivos temporários
+
+- O nome é aleatório (24 bytes de entropia), sem nenhum trecho vindo do chamador ou do conteúdo, e o arquivo é criado com `wx` e modo `0600`: um caminho já existente, inclusive um symlink plantado, faz a criação falhar em vez de ser seguido.
+- O diretório é `streamTempDirectory` quando informado e, caso contrário, o diretório temporário do sistema. O caminho é resolvido para absoluto na validação de opções; o diretório precisa existir, e um diretório inutilizável produz `RESOURCE_LIMIT` em vez de gravar em outro lugar silenciosamente.
+- A remoção acontece no `finally` da extração, portanto também em erro, `TIMEOUT`, `ABORTED`, falha de parsing e `not_found`.
+- Caminhos fornecidos pelo chamador nunca são removidos, e nenhum caminho temporário aparece em resultados, avisos ou mensagens de erro.
+
+#### Compatibilidade
+
+A mudança é retrocompatível. `DocumentInput` ganhou dois membros na união, `ExtractOptions` ganhou três campos opcionais e nenhum comportamento anterior mudou: código existente que passa caminho, URL ou bytes continua idêntico, inclusive nos códigos de erro. O requisito de runtime segue sendo Node.js 20 ou superior, validado em Node.js 20, 22 e 24.
 
 ### Perfis resolvidos
 
@@ -180,21 +231,21 @@ Quando `maxPages` corta um PDF, `complete` é falso e `warnings` registra quanta
 
 ## Códigos de erro de extração
 
-| Código               | Situações representadas                                                                                               |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `INVALID_INPUT`      | entrada vazia/tipo inválido, caminho não-arquivo, URL inválida, leitura local recusada ou argumentos inválidos na CLI |
-| `FILE_NOT_FOUND`     | caminho local inexistente                                                                                             |
-| `FILE_TOO_LARGE`     | tamanho conhecido ou lido excede `maxFileSizeBytes`                                                                   |
-| `DOWNLOAD_ERROR`     | falha de rede, resposta sem body, status HTTP não 2xx ou redirect inválido/excessivo                                  |
-| `INVALID_OPTIONS`    | valor fora da faixa, combinação inválida, cabeçalho ou signal inválido                                                |
-| `INVALID_PDF`        | PDF não pode ser parseado ou tem geometria inválida                                                                   |
-| `UNSUPPORTED_FORMAT` | assinatura não corresponde a PDF/JPEG/PNG                                                                             |
-| `INVALID_IMAGE`      | estrutura PNG/JPEG truncada/malformada ou decodificação inválida                                                      |
-| `PASSWORD_REQUIRED`  | PDF criptografado exige senha; não há opção de senha                                                                  |
-| `TIMEOUT`            | deadline total excedido                                                                                               |
-| `ABORTED`            | `AbortSignal` do chamador foi abortado                                                                                |
-| `RESOURCE_LIMIT`     | limites de dimensão, área, memória ou volume de texto foram excedidos                                                 |
-| `PROCESSING_ERROR`   | falha inesperada de processamento não classificada em categoria mais específica                                       |
+| Código               | Situações representadas                                                                                                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `INVALID_INPUT`      | entrada vazia/tipo inválido, caminho não-arquivo, URL inválida, leitura local recusada, bloco de stream que não é byte array, stream que falhou durante a leitura ou argumentos inválidos na CLI |
+| `FILE_NOT_FOUND`     | caminho local inexistente                                                                                                                                                                        |
+| `FILE_TOO_LARGE`     | tamanho conhecido ou lido excede `maxFileSizeBytes`                                                                                                                                              |
+| `DOWNLOAD_ERROR`     | falha de rede, resposta sem body, status HTTP não 2xx ou redirect inválido/excessivo                                                                                                             |
+| `INVALID_OPTIONS`    | valor fora da faixa, combinação inválida, cabeçalho ou signal inválido                                                                                                                           |
+| `INVALID_PDF`        | PDF não pode ser parseado ou tem geometria inválida                                                                                                                                              |
+| `UNSUPPORTED_FORMAT` | assinatura não corresponde a PDF/JPEG/PNG                                                                                                                                                        |
+| `INVALID_IMAGE`      | estrutura PNG/JPEG truncada/malformada ou decodificação inválida                                                                                                                                 |
+| `PASSWORD_REQUIRED`  | PDF criptografado exige senha; não há opção de senha                                                                                                                                             |
+| `TIMEOUT`            | deadline total excedido                                                                                                                                                                          |
+| `ABORTED`            | `AbortSignal` do chamador foi abortado                                                                                                                                                           |
+| `RESOURCE_LIMIT`     | limites de dimensão, área, memória ou volume de texto foram excedidos, ou o temporário de stream não pôde ser gravado                                                                            |
+| `PROCESSING_ERROR`   | falha inesperada de processamento não classificada em categoria mais específica                                                                                                                  |
 
 As mensagens atuais são em inglês e evitam incluir a entrada bruta ou a causa interna. Use `error.code` para decisões de programa, não comparação textual de `message`.
 
@@ -291,7 +342,8 @@ Exports de extração:
 - `ExtractionStatus`;
 - `OcrMode`;
 - `PdfInput`;
-- `PerformanceProfile`.
+- `PerformanceProfile`;
+- `StreamStorage`.
 
 ## Referências no código
 
@@ -300,5 +352,6 @@ Exports de extração:
 - orquestração: `src/extractor.ts`;
 - defaults e validação de opções: `src/options.ts`;
 - carregamento de entrada: `src/document/load-input.ts`;
+- recebimento de streams e temporários: `src/document/read-stream.ts`;
 - validação fiscal: `src/validation/access-key.ts`;
 - consolidação e confiança: `src/scoring/merge-results.ts`.

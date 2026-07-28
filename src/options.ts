@@ -1,10 +1,25 @@
 import { validateHeaderName, validateHeaderValue } from "node:http";
+import { resolve as resolvePath } from "node:path";
 
-import type { DocumentFormat, ExtractOptions, OcrMode, PerformanceProfile } from "./types";
+import type { DocumentFormat, ExtractOptions, OcrMode, PerformanceProfile, StreamStorage } from "./types";
 
 const MEBIBYTE = 1024 * 1024;
 
 const BLOCKED_REQUEST_HEADERS = new Set(["accept-encoding", "connection", "content-length", "expect", "host", "if-range", "keep-alive", "proxy-connection", "range", "te", "trailer", "transfer-encoding", "upgrade"]);
+
+/**
+ * Keeps a streamed input in memory until it grows large enough to be worth a temporary file.
+ *
+ * A DANFE, whether native PDF or a photograph of one, sits far below this threshold, so the common case never
+ * touches the disk while an unexpectedly large upload stops competing with the render surfaces that dominate
+ * extraction memory.
+ */
+export const DEFAULT_STREAM_MEMORY_THRESHOLD_BYTES = 8 * MEBIBYTE;
+
+/**
+ * Selects the storage policy applied to stream inputs when the caller does not choose one.
+ */
+export const DEFAULT_STREAM_STORAGE: StreamStorage = "auto";
 
 interface ProfileDefaults {
   passes: number;
@@ -66,6 +81,18 @@ export interface ResolvedOptions {
    * Limits accepted document size in bytes.
    */
   maxFileSizeBytes: number;
+  /**
+   * Selects where a stream input is held while it is consumed; path, URL, and in-memory inputs ignore it.
+   */
+  streamStorage: StreamStorage;
+  /**
+   * Sets the byte count an `auto` stream may hold in memory before migrating to a temporary file.
+   */
+  streamMemoryThresholdBytes: number;
+  /**
+   * Stores the resolved directory that receives extractor-owned temporary stream files, when the caller supplied one.
+   */
+  streamTempDirectory?: string;
   /**
    * Limits pixel allocation for an individual rendered page.
    */
@@ -174,6 +201,16 @@ function validateSignal(signal: ExtractOptions["signal"]): void {
   }
 }
 
+function normalizeTempDirectory(directory: ExtractOptions["streamTempDirectory"]): string | undefined {
+  if (directory === undefined) {
+    return undefined;
+  }
+  if (typeof directory !== "string" || directory.trim() === "") {
+    throw new InvalidOptionsError("streamTempDirectory must be a non-empty path to an existing directory.");
+  }
+  return resolvePath(directory);
+}
+
 function booleanOrDefault(name: string, value: boolean | undefined, fallback: boolean): boolean {
   if (value === undefined) {
     return fallback;
@@ -206,7 +243,13 @@ export function resolveOptions(options: ExtractOptions = {}): ResolvedOptions {
     throw new InvalidOptionsError("ocr must be never, fallback, or always.");
   }
 
+  const streamStorage = options.streamStorage ?? DEFAULT_STREAM_STORAGE;
+  if (!["memory", "file", "auto"].includes(streamStorage)) {
+    throw new InvalidOptionsError("streamStorage must be memory, file, or auto.");
+  }
+
   const requestHeaders = normalizeRequestHeaders(options.requestHeaders);
+  const streamTempDirectory = normalizeTempDirectory(options.streamTempDirectory);
   validateSignal(options.signal);
 
   return {
@@ -215,6 +258,9 @@ export function resolveOptions(options: ExtractOptions = {}): ResolvedOptions {
     ocr,
     maxPages: integerInRange("maxPages", options.maxPages, profile.maxPages, 1, 10_000),
     maxFileSizeBytes: integerInRange("maxFileSizeBytes", options.maxFileSizeBytes, 30 * MEBIBYTE, 1, 1024 * MEBIBYTE),
+    streamStorage,
+    streamMemoryThresholdBytes: integerInRange("streamMemoryThresholdBytes", options.streamMemoryThresholdBytes, DEFAULT_STREAM_MEMORY_THRESHOLD_BYTES, 1, 1024 * MEBIBYTE),
+    ...(streamTempDirectory === undefined ? {} : { streamTempDirectory }),
     maxPixelsPerPage: integerInRange("maxPixelsPerPage", options.maxPixelsPerPage, profile.maxPixelsPerPage, 250_000, 100_000_000),
     maxSourceImagePixels: integerInRange("maxSourceImagePixels", options.maxSourceImagePixels, profile.maxSourceImagePixels, 250_000, 200_000_000),
     timeoutMs: integerInRange("timeoutMs", options.timeoutMs, profile.timeoutMs, 0, 3_600_000),

@@ -83,6 +83,57 @@ async function inspectUpload(upload: ArrayBuffer) {
 
 O formato é inferido dos bytes, não do nome fornecido pelo upload.
 
+## Entrada em stream
+
+### `Readable` com política `auto`
+
+```ts
+import { createReadStream } from "node:fs";
+import { extractNFeAccessKeys } from "cerne-fiscal";
+
+const result = await extractNFeAccessKeys(createReadStream("./nota.pdf"), {
+  streamStorage: "auto",
+  streamMemoryThresholdBytes: 1024 * 1024,
+  maxFileSizeBytes: 25 * 1024 * 1024,
+});
+```
+
+Com `auto`, o documento fica na memória até 1 MiB e migra para um arquivo temporário do extrator acima disso, sem reiniciar a leitura. O temporário é removido ao fim da chamada, inclusive em erro, timeout, aborto ou `not_found`.
+
+### Upload gravado em temporário
+
+```ts
+import type { Readable } from "node:stream";
+import { extractNFeAccessKeys } from "cerne-fiscal";
+
+async function inspectUploadStream(upload: Readable, signal: AbortSignal) {
+  return extractNFeAccessKeys(upload, {
+    streamStorage: "file",
+    streamTempDirectory: "/var/tmp/cerne",
+    maxFileSizeBytes: 25 * 1024 * 1024,
+    signal,
+  });
+}
+```
+
+`upload` pode ser qualquer `Readable`, incluindo o `IncomingMessage` de um servidor HTTP. Com `file`, cada bloco é gravado no temporário assim que chega e o próximo bloco só é lido depois da gravação, então o produtor é limitado pela velocidade do disco em vez de encher a memória durante o recebimento. `streamTempDirectory` precisa existir; se não for possível criar o arquivo ali, a chamada devolve `RESOURCE_LIMIT` em vez de gravar em outro lugar.
+
+### Gerador assíncrono de bytes
+
+```ts
+import { extractNFeAccessKeys } from "cerne-fiscal";
+
+async function* blocos(partes: Uint8Array[]) {
+  for (const parte of partes) {
+    yield parte;
+  }
+}
+
+const result = await extractNFeAccessKeys(blocos(partes), { streamStorage: "memory" });
+```
+
+Qualquer `AsyncIterable<Uint8Array>` é aceito pelo mesmo caminho do `Readable`. Todo bloco precisa ser `Uint8Array` ou `Buffer`; qualquer outro tipo devolve `INVALID_INPUT`.
+
 ## URL pública
 
 ```ts

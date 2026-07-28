@@ -1,8 +1,8 @@
 # Cerne Fiscal
 
-Biblioteca e ferramenta de linha de comando para localizar, validar e classificar chaves de acesso de NF-e (modelo 55) e NFC-e (modelo 65) em documentos PDF, JPEG e PNG. As entradas podem ser caminhos locais, URLs HTTP(S) ou bytes em memória; o processamento usa CPU e combina texto nativo de PDF, Code 128, QR Code e OCR.
+Biblioteca e ferramenta de linha de comando para localizar, validar e classificar chaves de acesso de NF-e (modelo 55) e NFC-e (modelo 65) em documentos PDF, JPEG e PNG. As entradas podem ser caminhos locais, URLs HTTP(S), bytes em memória, `Readable` do Node.js ou qualquer `AsyncIterable<Uint8Array>`; o processamento usa CPU e combina texto nativo de PDF, Code 128, QR Code e OCR.
 
-O pacote atual é `cerne-fiscal` versão `0.5.0`, requer Node.js 20 ou superior e publica interfaces ESM, CommonJS e TypeScript.
+O pacote atual é `cerne-fiscal` versão `0.6.0`, requer Node.js 20 ou superior e publica interfaces ESM, CommonJS e TypeScript.
 
 ## Escopo
 
@@ -46,7 +46,20 @@ if (extraction.success) {
 }
 ```
 
-Para NFC-e, use `extractNFCeAccessKeys`. As duas funções aceitam caminho, URL HTTP(S), `ArrayBuffer`, `Uint8Array` e, por herança, `Buffer` do Node.js.
+Para NFC-e, use `extractNFCeAccessKeys`. As duas funções aceitam caminho, URL HTTP(S), `ArrayBuffer`, `Uint8Array`, `Buffer` (por herança), `Readable` e qualquer `AsyncIterable<Uint8Array>`.
+
+### Entrada em stream
+
+```js
+const result = await extractNFeAccessKeys(readable, {
+  streamStorage: "auto",
+  streamMemoryThresholdBytes: 1024 * 1024,
+  maxFileSizeBytes: 25 * 1024 * 1024,
+  signal,
+});
+```
+
+`streamStorage` decide onde os bytes ficam enquanto o stream é consumido: `memory` acumula na memória do processo, `file` grava cada bloco em um temporário do extrator e `auto` (padrão) começa na memória e migra para um temporário ao ultrapassar `streamMemoryThresholdBytes`. A política vale apenas para streams; `Buffer`, `Uint8Array` e `ArrayBuffer` já estão na memória e nunca vão para disco. Temporários criados pelo extrator são removidos ao fim da chamada, inclusive em erro, timeout, aborto e `not_found`. Detalhes em [API](docs/API.md#entradas-em-stream).
 
 ## Uso rápido da CLI
 
@@ -117,7 +130,7 @@ O contrato completo, os limites, os códigos de erro e a interpretação da conf
 
 Os scripts declarados no projeto cobrem verificação de tipos, lint, formatação, build, auditoria e benchmark. O fluxo consolidado é `npm run check`; o CI executa verificação de tipos, lint, formatação e build em Node.js 20, 22 e 24, além de uma auditoria separada em Node.js 22.
 
-O repositório não declara um script `test` nem contém uma suíte automatizada de testes. As fixtures sintéticas e determinísticas em `bench/` verificam regressões de resultado e desempenho, mas o benchmark não faz parte do workflow de CI atual.
+As fixtures sintéticas e determinísticas em `bench/` verificam regressões de resultado e desempenho, mas o benchmark não faz parte do workflow de CI atual.
 
 ## Licença
 

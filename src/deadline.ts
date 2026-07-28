@@ -3,6 +3,22 @@ import type { ResolvedOptions } from "./options";
 import { elapsedMilliseconds, startTimer, type MonotonicTimestamp } from "./timing";
 
 /**
+ * Converts an aborted signal into the categorized failure that stopped the work.
+ *
+ * A deadline reached inside {@link WorkGuard} is re-derived by the caller's own `check`, so this helper only
+ * needs to report the generic cancellation unless the reason already carries a category.
+ *
+ * @param {AbortSignal} [signal] - Supplies the signal to inspect, which may be absent.
+ * @returns {ExtractionFailure|null} Returns the failure to raise, or `null` when the signal is absent or still active.
+ */
+export function failureFromSignal(signal: AbortSignal | undefined): ExtractionFailure | null {
+  if (signal?.aborted !== true) {
+    return null;
+  }
+  return signal.reason instanceof ExtractionFailure ? signal.reason : new ExtractionFailure("ABORTED", "Extraction was aborted.", { cause: signal.reason });
+}
+
+/**
  * Coordinates caller cancellation and elapsed-time limits across extraction stages.
  *
  * @class

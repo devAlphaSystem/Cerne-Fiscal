@@ -2,7 +2,7 @@ import { findCandidatesInDecodedValue, findCandidatesInText } from "./candidates
 import { findCandidatesInOcrText } from "./candidates/from-ocr";
 import type { CandidateEvidence } from "./candidates/types";
 import { WorkGuard } from "./deadline";
-import { loadDocumentInput } from "./document/load-input";
+import { loadDocumentInput, type LoadedInput } from "./document/load-input";
 import { openDocument } from "./document/open-document";
 import type { DocumentHandle, DocumentPageLike, DocumentPageText, RenderedPage } from "./document/types";
 import { ExtractionFailure } from "./errors";
@@ -376,13 +376,17 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: D
   let ocrSession: OcrSession | null = null;
   let cursor: PageCursor | null = null;
   let reuse: RenderReuse | null = null;
+  let loaded: LoadedInput | null = null;
   let result: ExtractionResult<TModel>;
   try {
     guard = new WorkGuard(options, startedAt);
     guard.check();
-    const loaded = await loadDocumentInput(input, options.maxFileSizeBytes, {
+    loaded = await loadDocumentInput(input, options.maxFileSizeBytes, {
       ...(options.requestHeaders === undefined ? {} : { requestHeaders: options.requestHeaders }),
       signal: guard.signal,
+      streamStorage: options.streamStorage,
+      streamMemoryThresholdBytes: options.streamMemoryThresholdBytes,
+      ...(options.streamTempDirectory === undefined ? {} : { streamTempDirectory: options.streamTempDirectory }),
     });
     guard.check();
     state.fileSizeBytes = loaded.size;
@@ -437,6 +441,7 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: D
     disposeQuietly(() => reuse?.dispose());
     disposeQuietly(() => cursor?.release());
     await Promise.all([releaseQuietly(() => ocrSession?.terminate()), releaseQuietly(() => handle?.close())]);
+    await releaseQuietly(() => loaded?.cleanup());
   }
   return finalizeResultDuration(result, startedAt);
 }

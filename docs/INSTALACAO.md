@@ -71,7 +71,7 @@ Os comandos acima são instruções para execução manual. Consulte também os 
 | `npm run bench`          | executa o benchmark com GC exposto     |
 | `npm run check`          | agrega tipos, lint, formatação e build |
 
-Não há script `test` no `package.json`. A verificação comportamental disponível no repositório é o benchmark determinístico descrito em `bench/README.md`.
+O benchmark determinístico descrito em `bench/README.md` continua sendo a verificação de regressão de resultado e desempenho sobre documentos completos.
 
 ## Dependências de runtime
 

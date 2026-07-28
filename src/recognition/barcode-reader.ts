@@ -1,10 +1,36 @@
 import type { BinaryBitmap, DecodeHintType, LuminanceSource, Reader, RGBLuminanceSource } from "@zxing/library";
 
-import type { RenderedPage } from "../pdf/render-page";
+import type { RenderedPage } from "../document/types";
 
 export interface DecodedBarcode {
   text: string;
   source: "code128" | "qr-code";
+}
+
+/**
+ * A one-pixel box blur fuses the dotted modules of thermal-printer barcodes
+ * into solid areas, which binarizes far more reliably in photographs.
+ */
+function boxBlurLuminance(source: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray {
+  const horizontal = new Float32Array(width * height);
+  const output = new Uint8ClampedArray(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const left = source[y * width + Math.max(0, x - 1)] ?? 0;
+      const center = source[y * width + x] ?? 0;
+      const right = source[y * width + Math.min(width - 1, x + 1)] ?? 0;
+      horizontal[y * width + x] = (left + center + right) / 3;
+    }
+  }
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const top = horizontal[Math.max(0, y - 1) * width + x] ?? 0;
+      const center = horizontal[y * width + x] ?? 0;
+      const bottom = horizontal[Math.min(height - 1, y + 1) * width + x] ?? 0;
+      output[y * width + x] = (top + center + bottom) / 3;
+    }
+  }
+  return output;
 }
 
 function scanRegions(source: RGBLuminanceSource, width: number, height: number): LuminanceSource[] {
@@ -39,8 +65,10 @@ function decodeBitmap(reader: Reader, bitmap: BinaryBitmap, hints: Map<DecodeHin
   }
 }
 
-export async function readBarcodes(rendered: RenderedPage): Promise<DecodedBarcode[]> {
-  const { BarcodeFormat, BinaryBitmap, Code128Reader, DecodeHintType, HybridBinarizer, InvertedLuminanceSource, QRCodeReader, RGBLuminanceSource } = await import("@zxing/library");
+export async function readBarcodes(rendered: RenderedPage, photographicEnhancements = false): Promise<DecodedBarcode[]> {
+  const imported = await import("@zxing/library");
+  const zxing = (imported as unknown as { default?: typeof imported }).default ?? imported;
+  const { BarcodeFormat, BinaryBitmap, Code128Reader, DecodeHintType, GlobalHistogramBinarizer, HybridBinarizer, InvertedLuminanceSource, QRCodeReader, RGBLuminanceSource } = zxing;
   const hints = new Map<DecodeHintType, unknown>();
   hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.CODE_128, BarcodeFormat.QR_CODE]);
   hints.set(DecodeHintType.TRY_HARDER, true);
@@ -64,16 +92,24 @@ export async function readBarcodes(rendered: RenderedPage): Promise<DecodedBarco
 
   const unique = new Map<string, DecodedBarcode>();
   const regions = scanRegions(source, rendered.width, rendered.height);
+  let blurredSource: RGBLuminanceSource | null = null;
   for (const [regionIndex, region] of regions.entries()) {
     const candidateSources: LuminanceSource[] = [region];
-    if (regionIndex === 0) {
-      candidateSources.push(new InvertedLuminanceSource(region));
+    if (photographicEnhancements && regionIndex === 0) {
+      blurredSource ??= new RGBLuminanceSource(boxBlurLuminance(luminance, rendered.width, rendered.height), rendered.width, rendered.height);
+      candidateSources.push(new InvertedLuminanceSource(region), blurredSource);
     }
     for (const attempt of attempts) {
       for (const candidateSource of candidateSources) {
-        const result = decodeBitmap(attempt.reader, new BinaryBitmap(new HybridBinarizer(candidateSource)), hints, attempt.source);
-        if (result !== null) {
-          unique.set(`${result.source}:${result.text}`, result);
+        const bitmaps = [new BinaryBitmap(new HybridBinarizer(candidateSource))];
+        if (photographicEnhancements) {
+          bitmaps.push(new BinaryBitmap(new GlobalHistogramBinarizer(candidateSource)));
+        }
+        for (const bitmap of bitmaps) {
+          const result = decodeBitmap(attempt.reader, bitmap, hints, attempt.source);
+          if (result !== null) {
+            unique.set(`${result.source}:${result.text}`, result);
+          }
         }
       }
     }

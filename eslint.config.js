@@ -20,4 +20,20 @@ export default tseslint.config(
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" }],
     },
   },
+  {
+    files: ["test/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        AbortController: "readonly",
+        Buffer: "readonly",
+        console: "readonly",
+        Headers: "readonly",
+        process: "readonly",
+        Response: "readonly",
+        setTimeout: "readonly",
+        TextEncoder: "readonly",
+        URL: "readonly",
+      },
+    },
+  },
 );

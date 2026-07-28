@@ -1,8 +1,8 @@
-import { findCandidatesInText } from "./from-text";
+import { findCandidatesInText, isNearAccessKeyLabel } from "./from-text";
 import { isValidAccessKeyForModel, validateAccessKey, type AccessKeyModel } from "../validation/access-key";
 import type { CandidateEvidence } from "./types";
 
-const OCR_CLUSTER = /[A-Z0-9](?:[\s.\-_/]*[A-Z0-9]){43}/g;
+const OCR_CLUSTER = /(?=([A-Z0-9](?:[\s.\-_/]*[A-Z0-9]){43}))/g;
 const OCR_TO_DIGIT: Readonly<Record<string, string>> = {
   O: "0",
   Q: "0",
@@ -76,6 +76,14 @@ function correctedAlternatives(raw: string): Array<{ value: string; corrections:
   return alternatives;
 }
 
+function isBoundedCluster(text: string, start: number, length: number): boolean {
+  let after = start + length;
+  while (after < text.length && /[\s.\-_/]/.test(text[after] ?? "")) {
+    after += 1;
+  }
+  return !/[A-Z0-9]/.test(text[start - 1] ?? "") && !/[A-Z0-9]/.test(text[after] ?? "");
+}
+
 export function findCandidatesInOcrText(text: string, page: number, pass: number, confidence: number, expectedModel: AccessKeyModel): CandidateEvidence[] {
   const normalized = text.normalize("NFKC").toUpperCase();
   const exact = findCandidatesInText(normalized, page, expectedModel).map((candidate) => ({
@@ -88,21 +96,37 @@ export function findCandidatesInOcrText(text: string, page: number, pass: number
   const seen = new Set(exact.map((candidate) => candidate.accessKey));
 
   for (const match of normalized.matchAll(OCR_CLUSTER)) {
-    for (const corrected of correctedAlternatives(match[0])) {
-      if (corrected.corrections === 0 || seen.has(corrected.value) || !isValidAccessKeyForModel(corrected.value, expectedModel)) {
-        continue;
-      }
-      seen.add(corrected.value);
-      output.push({
-        accessKey: corrected.value,
-        page,
-        source: "ocr",
-        pass,
-        nearLabel: false,
-        ocrConfidence: confidence,
-        corrections: corrected.corrections,
-      });
+    const raw = match[1];
+    if (raw === undefined) {
+      continue;
     }
+    const start = match.index;
+    if (!isBoundedCluster(normalized, start, raw.length)) {
+      continue;
+    }
+    const validAlternatives = new Map<string, { value: string; corrections: number }>();
+    for (const corrected of correctedAlternatives(raw)) {
+      if (corrected.corrections > 0 && isValidAccessKeyForModel(corrected.value, expectedModel)) {
+        validAlternatives.set(corrected.value, corrected);
+      }
+    }
+    if (validAlternatives.size !== 1) {
+      continue;
+    }
+    const corrected = validAlternatives.values().next().value;
+    if (corrected === undefined || seen.has(corrected.value)) {
+      continue;
+    }
+    seen.add(corrected.value);
+    output.push({
+      accessKey: corrected.value,
+      page,
+      source: "ocr",
+      pass,
+      nearLabel: isNearAccessKeyLabel(normalized, start),
+      ocrConfidence: confidence,
+      corrections: corrected.corrections,
+    });
   }
 
   return output;

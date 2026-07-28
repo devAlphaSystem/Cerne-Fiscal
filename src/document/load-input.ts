@@ -1,13 +1,13 @@
 import { readFile, stat } from "node:fs/promises";
 
 import { ExtractionFailure } from "../errors";
-import type { PdfInput } from "../types";
+import type { DocumentFormat, DocumentInput } from "../types";
+import { detectDocumentFormat } from "./detect-format";
 
 const MAX_REDIRECTS = 5;
 const INITIAL_DOWNLOAD_BUFFER_BYTES = 64 * 1024;
 const MAX_INITIAL_CONTENT_LENGTH_ALLOCATION = 1024 * 1024;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-const CREDENTIAL_HEADERS = ["authorization", "cookie", "proxy-authorization"] as const;
 const WINDOWS_DRIVE_PATH = /^[a-z]:/i;
 const HTTP_URL = /^https?:\/\//i;
 const URI_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
@@ -15,35 +15,37 @@ const URI_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 export interface LoadedInput {
   data: Uint8Array;
   size: number;
+  format: DocumentFormat;
 }
 
-export interface LoadPdfInputControls {
+export interface LoadDocumentInputControls {
   requestHeaders?: Readonly<Record<string, string>>;
   signal?: AbortSignal;
 }
 
-function hasPdfSignature(data: Uint8Array): boolean {
-  const prefix = Buffer.from(data.buffer, data.byteOffset, Math.min(data.byteLength, 1024));
-  return prefix.indexOf("%PDF-") >= 0;
+function checkedFormat(data: Uint8Array): DocumentFormat {
+  const format = detectDocumentFormat(data);
+  if (format === null) {
+    throw new ExtractionFailure("UNSUPPORTED_FORMAT", "The input bytes do not match a supported PDF, JPEG, or PNG signature.");
+  }
+  return format;
 }
 
-function validatePdfBytes(data: Uint8Array, maxFileSizeBytes: number): void {
+function validateDocumentBytes(data: Uint8Array, maxFileSizeBytes: number): DocumentFormat {
   if (data.byteLength === 0) {
-    throw new ExtractionFailure("INVALID_INPUT", "The PDF input is empty.");
+    throw new ExtractionFailure("INVALID_INPUT", "The document input is empty.");
   }
   if (data.byteLength > maxFileSizeBytes) {
-    throw new ExtractionFailure("FILE_TOO_LARGE", `The PDF exceeds the configured ${maxFileSizeBytes}-byte limit.`);
+    throw new ExtractionFailure("FILE_TOO_LARGE", `The document exceeds the configured ${maxFileSizeBytes}-byte limit.`);
   }
-  if (!hasPdfSignature(data)) {
-    throw new ExtractionFailure("INVALID_PDF", "The input does not contain a PDF signature.");
-  }
+  return checkedFormat(data);
 }
 
 function checkedBytes(data: Uint8Array, maxFileSizeBytes: number): LoadedInput {
-  validatePdfBytes(data, maxFileSizeBytes);
+  const format = validateDocumentBytes(data, maxFileSizeBytes);
   const bytes = new Uint8Array(data.byteLength);
   bytes.set(data);
-  return { data: bytes, size: data.byteLength };
+  return { data: bytes, size: data.byteLength, format };
 }
 
 function checkedRemoteUrl(url: URL): URL {
@@ -59,7 +61,7 @@ function checkedRemoteUrl(url: URL): URL {
 function remoteUrlFromInput(input: string): URL | null {
   const value = input.trim();
   if (value === "") {
-    throw new ExtractionFailure("INVALID_INPUT", "A non-empty PDF path or HTTP(S) URL is required.");
+    throw new ExtractionFailure("INVALID_INPUT", "A non-empty document path or HTTP(S) URL is required.");
   }
   if (WINDOWS_DRIVE_PATH.test(value)) {
     return null;
@@ -93,8 +95,8 @@ function remoteHeaders(requestHeaders: Readonly<Record<string, string>> | undefi
   }
 }
 
-function stripRedirectCredentials(headers: Headers): void {
-  for (const name of CREDENTIAL_HEADERS) {
+function stripCallerHeaders(headers: Headers, requestHeaders: Readonly<Record<string, string>> | undefined): void {
+  for (const name of Object.keys(requestHeaders ?? {})) {
     headers.delete(name);
   }
 }
@@ -123,10 +125,10 @@ async function readRemoteBody(response: Response, maxFileSizeBytes: number, sign
   const size = advertisedSize(response);
   if (size !== null && size > BigInt(maxFileSizeBytes)) {
     cancelResponse(response);
-    throw new ExtractionFailure("FILE_TOO_LARGE", `The PDF exceeds the configured ${maxFileSizeBytes}-byte limit.`);
+    throw new ExtractionFailure("FILE_TOO_LARGE", `The document exceeds the configured ${maxFileSizeBytes}-byte limit.`);
   }
   if (response.body === null) {
-    throw new ExtractionFailure("DOWNLOAD_ERROR", "The remote PDF response did not contain a body.");
+    throw new ExtractionFailure("DOWNLOAD_ERROR", "The remote document response did not contain a body.");
   }
 
   const advertisedInitialSize = size === null ? INITIAL_DOWNLOAD_BUFFER_BYTES : Math.min(Number(size), MAX_INITIAL_CONTENT_LENGTH_ALLOCATION);
@@ -135,14 +137,14 @@ async function readRemoteBody(response: Response, maxFileSizeBytes: number, sign
     data = new Uint8Array(Math.min(maxFileSizeBytes, advertisedInitialSize));
   } catch (error) {
     await cancelResponse(response);
-    throw new ExtractionFailure("RESOURCE_LIMIT", "The remote PDF could not be buffered within available memory.", { cause: error });
+    throw new ExtractionFailure("RESOURCE_LIMIT", "The remote document could not be buffered within available memory.", { cause: error });
   }
 
   let reader: ReadableStreamDefaultReader<Uint8Array>;
   try {
     reader = response.body.getReader();
   } catch (error) {
-    throw new ExtractionFailure("DOWNLOAD_ERROR", "The remote PDF response could not be read.", { cause: error });
+    throw new ExtractionFailure("DOWNLOAD_ERROR", "The remote document response could not be read.", { cause: error });
   }
   let total = 0;
   try {
@@ -157,7 +159,7 @@ async function readRemoteBody(response: Response, maxFileSizeBytes: number, sign
       const requiredSize = total + chunk.value.byteLength;
       if (requiredSize > maxFileSizeBytes) {
         cancelReader(reader);
-        throw new ExtractionFailure("FILE_TOO_LARGE", `The PDF exceeds the configured ${maxFileSizeBytes}-byte limit.`);
+        throw new ExtractionFailure("FILE_TOO_LARGE", `The document exceeds the configured ${maxFileSizeBytes}-byte limit.`);
       }
       if (requiredSize > data.byteLength) {
         const doubledSize = data.byteLength === 0 ? INITIAL_DOWNLOAD_BUFFER_BYTES : data.byteLength * 2;
@@ -174,9 +176,9 @@ async function readRemoteBody(response: Response, maxFileSizeBytes: number, sign
     }
     if (error instanceof RangeError) {
       cancelReader(reader);
-      throw new ExtractionFailure("RESOURCE_LIMIT", "The remote PDF could not be buffered within available memory.", { cause: error });
+      throw new ExtractionFailure("RESOURCE_LIMIT", "The remote document could not be buffered within available memory.", { cause: error });
     }
-    throw new ExtractionFailure("DOWNLOAD_ERROR", "The remote PDF response could not be read.", { cause: error });
+    throw new ExtractionFailure("DOWNLOAD_ERROR", "The remote document response could not be read.", { cause: error });
   } finally {
     try {
       reader.releaseLock();
@@ -186,11 +188,11 @@ async function readRemoteBody(response: Response, maxFileSizeBytes: number, sign
   }
 
   const bytes = data.subarray(0, total);
-  validatePdfBytes(bytes, maxFileSizeBytes);
-  return { data: bytes, size: total };
+  const format = validateDocumentBytes(bytes, maxFileSizeBytes);
+  return { data: bytes, size: total, format };
 }
 
-async function downloadPdf(initialUrl: URL, maxFileSizeBytes: number, controls: LoadPdfInputControls): Promise<LoadedInput> {
+async function downloadDocument(initialUrl: URL, maxFileSizeBytes: number, controls: LoadDocumentInputControls): Promise<LoadedInput> {
   let currentUrl = initialUrl;
   const headers = remoteHeaders(controls.requestHeaders);
   let redirects = 0;
@@ -208,28 +210,28 @@ async function downloadPdf(initialUrl: URL, maxFileSizeBytes: number, controls: 
       if (controls.signal?.aborted === true) {
         throw error;
       }
-      throw new ExtractionFailure("DOWNLOAD_ERROR", "The remote PDF could not be downloaded.", { cause: error });
+      throw new ExtractionFailure("DOWNLOAD_ERROR", "The remote document could not be downloaded.", { cause: error });
     }
 
     if (REDIRECT_STATUSES.has(response.status)) {
       const location = response.headers.get("location");
       cancelResponse(response);
       if (redirects >= MAX_REDIRECTS) {
-        throw new ExtractionFailure("DOWNLOAD_ERROR", `The remote PDF exceeded the ${MAX_REDIRECTS}-redirect limit.`);
+        throw new ExtractionFailure("DOWNLOAD_ERROR", `The remote document exceeded the ${MAX_REDIRECTS}-redirect limit.`);
       }
       if (location === null) {
-        throw new ExtractionFailure("DOWNLOAD_ERROR", "The remote PDF returned a redirect without a destination.");
+        throw new ExtractionFailure("DOWNLOAD_ERROR", "The remote document returned a redirect without a destination.");
       }
 
       let nextUrl: URL;
       try {
         nextUrl = checkedRemoteUrl(new URL(location, currentUrl));
       } catch (error) {
-        throw new ExtractionFailure("DOWNLOAD_ERROR", "The remote PDF returned an invalid redirect destination.", { cause: error });
+        throw new ExtractionFailure("DOWNLOAD_ERROR", "The remote document returned an invalid redirect destination.", { cause: error });
       }
 
-      if (nextUrl.origin !== currentUrl.origin || (currentUrl.protocol === "https:" && nextUrl.protocol === "http:")) {
-        stripRedirectCredentials(headers);
+      if (nextUrl.origin !== currentUrl.origin) {
+        stripCallerHeaders(headers, controls.requestHeaders);
       }
       currentUrl = nextUrl;
       redirects += 1;
@@ -239,17 +241,17 @@ async function downloadPdf(initialUrl: URL, maxFileSizeBytes: number, controls: 
     if (!response.ok) {
       const status = response.status;
       cancelResponse(response);
-      throw new ExtractionFailure("DOWNLOAD_ERROR", `The remote PDF request returned HTTP status ${status}.`);
+      throw new ExtractionFailure("DOWNLOAD_ERROR", `The remote document request returned HTTP status ${status}.`);
     }
     return readRemoteBody(response, maxFileSizeBytes, controls.signal);
   }
 }
 
-export async function loadPdfInput(input: PdfInput, maxFileSizeBytes: number, controls: LoadPdfInputControls = {}): Promise<LoadedInput> {
+export async function loadDocumentInput(input: DocumentInput, maxFileSizeBytes: number, controls: LoadDocumentInputControls = {}): Promise<LoadedInput> {
   if (typeof input === "string") {
     const remoteUrl = remoteUrlFromInput(input);
     if (remoteUrl !== null) {
-      return downloadPdf(remoteUrl, maxFileSizeBytes, controls);
+      return downloadDocument(remoteUrl, maxFileSizeBytes, controls);
     }
     if (controls.requestHeaders !== undefined) {
       throw new ExtractionFailure("INVALID_OPTIONS", "requestHeaders can only be used with an HTTP(S) URL input.");
@@ -260,7 +262,7 @@ export async function loadPdfInput(input: PdfInput, maxFileSizeBytes: number, co
         throw new ExtractionFailure("INVALID_INPUT", "The supplied path is not a file.");
       }
       if (file.size > maxFileSizeBytes) {
-        throw new ExtractionFailure("FILE_TOO_LARGE", `The PDF exceeds the configured ${maxFileSizeBytes}-byte limit.`);
+        throw new ExtractionFailure("FILE_TOO_LARGE", `The document exceeds the configured ${maxFileSizeBytes}-byte limit.`);
       }
       return checkedBytes(await readFile(input), maxFileSizeBytes);
     } catch (error) {
@@ -269,11 +271,11 @@ export async function loadPdfInput(input: PdfInput, maxFileSizeBytes: number, co
       }
       const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
       if (code === "ENOENT") {
-        throw new ExtractionFailure("FILE_NOT_FOUND", "The PDF file was not found.", {
+        throw new ExtractionFailure("FILE_NOT_FOUND", "The document file was not found.", {
           cause: error,
         });
       }
-      throw new ExtractionFailure("INVALID_INPUT", "The PDF file could not be read.", {
+      throw new ExtractionFailure("INVALID_INPUT", "The document file could not be read.", {
         cause: error,
       });
     }

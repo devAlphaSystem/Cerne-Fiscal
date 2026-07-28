@@ -1,11 +1,17 @@
 # Cerne Fiscal
 
 O Cerne Fiscal faz a extração local, somente por CPU, de chaves de acesso
-validadas de NF-e e NFC-e em arquivos PDF locais ou remotos. Primeiro, verifica
-o texto nativo do PDF; depois, Code 128/QR; e usa OCR local somente quando o
-perfil selecionado permite. Os arquivos remotos são baixados para o processo
-Node.js; a análise do PDF, o reconhecimento de códigos de barras e o OCR
-permanecem locais.
+validadas de NF-e e NFC-e em documentos PDF, JPEG e PNG. A entrada pode ser um
+caminho local, uma URL HTTP/HTTPS, `Buffer`, `Uint8Array` ou `ArrayBuffer`. O
+formato é identificado pela assinatura real dos bytes, independentemente da
+extensão e do `Content-Type`.
+
+Em PDFs, o extrator verifica primeiro o texto nativo e depois reutiliza o
+pipeline visual de Code 128, QR Code e OCR. JPEG e PNG são tratados como
+documentos visuais de uma página e passam pelo mesmo pipeline aplicável. Os
+arquivos remotos são baixados para o processo Node.js; renderização,
+reconhecimento e OCR permanecem locais e nenhuma imagem é enviada a serviços
+externos.
 
 O pacote aceita tanto as chaves numéricas legadas de 44 dígitos quanto o formato
 atual de 44 caracteres, introduzido para CNPJs alfanuméricos em julho de 2026.
@@ -19,7 +25,7 @@ npm install cerne-fiscal
 É necessário usar Node.js 20 ou mais recente. Não é preciso instalar o Tesseract
 no sistema, usar GPU ou serviço externo de extração, baixar modelos durante a
 execução nem fornecer credenciais de API ao pacote. A aplicação que chama o
-pacote pode fornecer credenciais quando a URL do PDF exigir autenticação.
+pacote pode fornecer credenciais quando a URL do documento exigir autenticação.
 
 ## Uma função por modelo fiscal
 
@@ -36,6 +42,11 @@ const nfceResult = await extractNFCeAccessKeys("/local/path/danfce.pdf", {
   passes: 2,
 });
 
+const photoResult = await extractNFCeAccessKeys("/local/path/cupom.jpg", {
+  performance: "accurate",
+  passes: 5,
+});
+
 console.log(JSON.stringify(result, null, 2));
 ```
 
@@ -46,16 +57,22 @@ processa somente um modelo. O tipo fiscal não faz parte de `ExtractOptions`.
 Em TypeScript, os retornos são inferidos como `ExtractionResult<"55">` e
 `ExtractionResult<"65">`, respectivamente.
 
+O contrato atual extrai e valida chaves de acesso. Itens, produtos, pagamentos,
+tributos e demais campos completos de uma NFC-e são uma evolução futura e não
+são inferidos por estas funções.
+
+O tipo público recomendado para essas entradas é `DocumentInput`. `PdfInput`
+continua exportado como um alias de compatibilidade, sem implementação paralela.
 Também são aceitos `Buffer`, `Uint8Array` e `ArrayBuffer`:
 
 ```ts
-const result = await extractNFeAccessKeys(pdfBuffer);
+const result = await extractNFeAccessKeys(documentBuffer);
 ```
 
-URLs públicas HTTP/HTTPS de PDFs podem ser informadas diretamente:
+URLs HTTP/HTTPS de qualquer formato aceito podem ser informadas diretamente:
 
 ```ts
-const result = await extractNFeAccessKeys("https://documents.example.com/public/danfe.pdf");
+const result = await extractNFCeAccessKeys("https://documents.example.com/public/cupom.png");
 ```
 
 Para uma URL autenticada, use a opção `requestHeaders`, disponível somente na API:
@@ -77,19 +94,20 @@ em memória. Cabeçalhos de roteamento, enquadramento, intervalo e negociação 
 compressão são reservados pelo componente de download e não podem ser
 sobrescritos.
 
-### Download de PDFs remotos
+### Download de documentos remotos
 
 Somente URLs `http://` e `https://` são aceitas. O componente de download segue
 respostas HTTP 301, 302, 303, 307 e 308, com no máximo cinco redirecionamentos.
-Ele remove `Authorization`, `Cookie` e `Proxy-Authorization` quando um
-redirecionamento muda a origem ou rebaixa HTTPS para HTTP. Os demais cabeçalhos
-fornecidos pela aplicação chamadora são mantidos na solicitação redirecionada.
+Quando um redirecionamento muda a origem, todos os cabeçalhos fornecidos em
+`requestHeaders` são removidos antes da próxima solicitação. Redirecionamentos
+na mesma origem preservam esses cabeçalhos.
 
 O limite `maxFileSizeBytes` (30 MiB por padrão) é aplicado tanto ao
 `Content-Length` declarado quanto aos bytes recebidos durante a transferência.
 `timeoutMs` abrange o download e a extração em conjunto, enquanto `signal` pode
-cancelar qualquer uma das fases. É a assinatura do PDF, e não a extensão da URL
-ou o tipo de mídia da resposta, que determina se o conteúdo baixado é aceito.
+cancelar qualquer uma das fases. É a assinatura de PDF, JPEG ou PNG, e não a
+extensão da URL ou o tipo de mídia da resposta, que determina se o conteúdo
+baixado é aceito.
 Falhas de download usam o código de erro `DOWNLOAD_ERROR`. Erros estruturados
 não reproduzem a URL, a string de consulta nem os valores dos cabeçalhos da
 solicitação.
@@ -101,10 +119,34 @@ aplicar sua própria política de confiança. Quando forem necessárias listas d
 permissão de host, DNS/IP ou redirecionamento, faça o download com um cliente
 controlado pela aplicação e envie os bytes resultantes ao extrator.
 
+## Formatos de imagem e segurança
+
+JPEG/JPG e PNG são os formatos de imagem suportados. Extensões ausentes,
+incorretas ou duplicadas não interferem na detecção quando os bytes são válidos.
+GIF, TIFF, HEIC/HEIF, vídeo e imagens multipágina não fazem parte deste contrato.
+
+Antes de decodificar uma imagem, o extrator lê largura e altura do cabeçalho,
+valida a estrutura inicial, recusa eixos acima de 32.767 pixels e aplica
+`maxSourceImagePixels`. As dimensões decodificadas são verificadas novamente.
+`maxPixelsPerPage` limita cada superfície produzida para reconhecimento.
+
+A primeira tentativa visual mantém toda a imagem, na orientação EXIF declarada,
+sem recorte ou filtro. Passagens posteriores, quando solicitadas, podem usar
+recorte conservador de margens, redimensionamento limitado, escala de cinza,
+contraste moderado e rotações discretas. Leitura invertida e regiões candidatas
+são usadas pelo leitor de códigos em imagens. Essas transformações derivadas não
+são contadas como ocorrências independentes da mesma fonte.
+
+Fotos inclinadas, desfocadas, amassadas, manchadas, com reflexo ou código
+degradado podem retornar legitimamente `not_found`. Aumentar `passes` não garante
+recuperação. O extrator não completa trechos ilegíveis, não cria uma chave a
+partir de CNPJ/data/número parcial e só aceita uma correção de OCR quando existe
+uma única alternativa integralmente válida.
+
 ## Resultado
 
 Cada função retorna um objeto compatível com JSON para sucesso, ausência de
-correspondência, entrada inválida, tempo limite e erros esperados de PDF:
+correspondência, entrada inválida, tempo limite e erros esperados do documento:
 
 ```json
 {
@@ -170,11 +212,13 @@ correspondência, entrada inválida, tempo limite e erros esperados de PDF:
   "metadata": {
     "performance": "balanced",
     "ocrMode": "fallback",
+    "inputFormat": "pdf",
     "passesRequested": 2,
     "passesUsed": 0,
     "pagesTotal": 1,
     "pagesProcessed": 1,
     "pagesRendered": 0,
+    "renderAttempts": 0,
     "ocrPages": 0,
     "fileSizeBytes": 8421,
     "maxPixelsPerPage": 12000000,
@@ -187,6 +231,13 @@ correspondência, entrada inválida, tempo limite e erros esperados de PDF:
   "error": null
 }
 ```
+
+Para JPEG e PNG, `pagesTotal` é sempre `1`. `sourceImageWidth` e
+`sourceImageHeight` registram as dimensões decodificadas originais, enquanto
+`renderAttempts` informa quantas superfícies visuais foram efetivamente criadas.
+`pagesRendered` continua representando a quantidade de páginas distintas
+renderizadas. `inputFormat` pode ficar ausente quando a entrada falha antes de a
+assinatura ser reconhecida.
 
 `results` contém todas as chaves únicas e validadas do modelo escolhido
 detectadas pelas etapas executadas nas páginas processadas. A função de NF-e
@@ -231,17 +282,20 @@ limiar em automações fiscais.
 | `requestHeaders`       | registro de strings            | nenhum               | Cabeçalhos exclusivos da API para um download HTTP(S)       |
 | `signal`               | `AbortSignal`                  | nenhum               | Cancela o download ou a extração local                      |
 
-A etapa de texto nativo sempre é executada e não conta como uma passagem visual.
-Cada passagem usa uma escala ou rotação diferente; o extrator nunca repete uma
-operação idêntica apenas para aumentar a confiança.
+A etapa de texto nativo existe somente para PDF e não conta como uma passagem
+visual. Em imagens, a primeira passagem usa toda a origem; as seguintes usam uma
+receita determinística de redimensionamento, filtro, recorte ou rotação. O
+extrator não usa repetições derivadas da mesma página para aumentar a confiança
+ou o número de ocorrências.
 
 Perfis:
 
-- `fast`: texto nativo e Code 128/QR; OCR desabilitado por padrão.
-- `balanced`: duas estratégias visuais e OCR somente quando o texto/código de
-  barras não encontra uma chave válida.
-- `accurate`: resoluções maiores, passagens opcionais com rotação e OCR local
-  como alternativa.
+- `fast`: texto nativo quando houver e uma tentativa visual; OCR desabilitado
+  por padrão.
+- `balanced`: duas estratégias visuais, incluindo pré-processamento moderado de
+  imagens, e OCR somente quando texto/código não encontra uma chave válida.
+- `accurate`: limites maiores e passagens adicionais configuráveis, incluindo
+  rotações e OCR local como alternativa.
 
 Os perfis `fast` e `balanced` ignoram o trabalho visual nas páginas que já
 produziram texto válido. O perfil `accurate` ainda executa as passagens de código
@@ -261,17 +315,19 @@ Por exemplo:
 
 ```bash
 cerne-fiscal ./nota.pdf --document-type nfe --performance balanced --passes 2 --pretty
-cerne-fiscal https://documents.example.com/public/cupom.pdf --document-type nfce --pretty
+cerne-fiscal ./cupom.jpg --document-type nfce --performance accurate --passes 5 --pretty
+cerne-fiscal https://documents.example.com/public/cupom.png --document-type nfce --pretty
 ```
 
 O argumento posicional pode ser o caminho de um arquivo local ou uma URL pública
-HTTP/HTTPS. `--document-type` é obrigatório, aceita somente `nfe` ou `nfce` em
-minúsculas e seleciona uma função de extração por execução. Intencionalmente, a
-CLI não oferece uma opção para credenciais ou cabeçalhos de solicitação
-personalizados; use a API da biblioteca com `requestHeaders` para downloads
-autenticados. Evite tokens de consulta assinados em URLs usadas na CLI, pois os
-argumentos do comando podem ficar visíveis no histórico do terminal ou na lista
-de processos do sistema operacional.
+HTTP/HTTPS de PDF, JPEG ou PNG. A detecção também usa os bytes na CLI.
+`--document-type` é obrigatório, aceita somente `nfe` ou `nfce` em minúsculas e
+seleciona uma função de extração por execução. Intencionalmente, a CLI não
+oferece uma opção para credenciais ou cabeçalhos de solicitação personalizados;
+use a API da biblioteca com `requestHeaders` para downloads autenticados. Evite
+tokens de consulta assinados em URLs usadas na CLI, pois os argumentos do
+comando podem ficar visíveis no histórico do terminal ou na lista de processos
+do sistema operacional.
 
 Opções disponíveis:
 
@@ -337,26 +393,30 @@ filtro por modelo pertence somente às funções de extração.
 
 - Execução somente por CPU; nenhum backend de GPU é usado.
 - O acesso à rede é usado apenas para baixar uma URL de entrada HTTP/HTTPS. Após
-  o download limitado, a extração é local; os bytes do PDF não são enviados a
-  um serviço de OCR nem a qualquer outro processador externo.
+  o download limitado, a extração é local; os bytes do documento ou da
+  fotografia não são enviados a um serviço de OCR nem a outro processador
+  externo.
 - Os dados de idioma do OCR são instalados localmente com o pacote e carregados
   explicitamente do disco, evitando o uso padrão da CDN do Tesseract.
-- Tamanho do arquivo, quantidade de páginas, pixels de imagens incorporadas e de
-  renderização, itens de texto, tamanho do texto, prazo e cancelamento têm
-  limites definidos.
+- Tamanho do arquivo, quantidade de páginas, dimensões/pixels de imagens de
+  origem, pixels de renderização, itens de texto, tamanho do texto, prazo e
+  cancelamento têm limites definidos.
 - A execução de JavaScript em PDFs é desabilitada.
 - As falhas esperadas são retornadas como JSON estruturado e nunca expõem
-  buffers nem objetos internos do PDF.
+  buffers, URLs completas, cabeçalhos ou objetos internos do documento.
 
 PDFs criptografados que exigem senha são informados como `PASSWORD_REQUIRED`.
-PDFs ou digitalizações gravemente danificados ainda podem produzir `not_found`;
-o pacote não inventa uma chave que não passe pela validação fiscal determinística.
+PDFs, imagens ou digitalizações gravemente danificados ainda podem produzir
+`not_found`; o pacote não inventa uma chave que não passe pela validação fiscal
+determinística. Uma evidência visual só entra em `results` depois de formato,
+modelo, emitente, campos fiscais aplicáveis e dígito verificador serem validados.
 
 Antes da renderização, o PDF.js ignora imagens incorporadas que excedam
 `maxSourceImagePixels`. Os valores padrão dos perfis permitem digitalizações em
 alta resolução sem deixar a decodificação da origem sem limites; aumente o
 limite explicitamente apenas para digitalizações confiáveis e excepcionalmente
-grandes.
+grandes. JPEG e PNG também são sondados e limitados antes da decodificação
+completa para reduzir o risco de bombas de descompressão.
 
 ## Desenvolvimento
 

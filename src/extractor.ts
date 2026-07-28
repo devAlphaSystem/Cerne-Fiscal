@@ -4,26 +4,29 @@ import { findCandidatesInDecodedValue, findCandidatesInText } from "./candidates
 import { findCandidatesInOcrText } from "./candidates/from-ocr";
 import type { CandidateEvidence } from "./candidates/types";
 import { WorkGuard } from "./deadline";
-import { ExtractionFailure, messageFromUnknown } from "./errors";
-import { getRenderRecipes, InvalidOptionsError, resolveOptions, type RenderRecipe, type ResolvedOptions } from "./options";
-import { extractPageText, type ExtractedPageText } from "./pdf/extract-text";
-import { loadPdfInput } from "./pdf/load-input";
-import { openPdfDocument } from "./pdf/open-document";
-import type { PdfHandle, PdfPageLike } from "./pdf/types";
+import { loadDocumentInput } from "./document/load-input";
+import { openDocument } from "./document/open-document";
+import type { DocumentHandle, DocumentPageLike, DocumentPageText } from "./document/types";
+import { ExtractionFailure } from "./errors";
+import { getBarcodeRenderVariants, getRenderRecipes, InvalidOptionsError, resolveOptions, type RenderRecipe, type ResolvedOptions } from "./options";
 import type { OcrSession } from "./recognition/ocr-reader";
 import { mergeEvidence } from "./scoring/merge-results";
-import type { ExtractOptions, ExtractedAccessKey, ExtractionErrorInfo, ExtractionMetadata, ExtractionResult, ExtractionStatus, PdfInput } from "./types";
+import type { DocumentFormat, DocumentInput, ExtractOptions, ExtractedAccessKey, ExtractionErrorInfo, ExtractionMetadata, ExtractionResult, ExtractionStatus } from "./types";
 import type { AccessKeyModel } from "./validation/access-key";
 
 interface MutableRunState {
   evidence: CandidateEvidence[];
   warnings: string[];
+  inputFormat: DocumentFormat | null;
   pagesTotal: number;
   pagesProcessed: number;
   renderedPages: Set<number>;
   ocrPages: Set<number>;
+  renderAttempts: number;
   passesUsed: number;
   fileSizeBytes: number;
+  sourceImageWidth: number | null;
+  sourceImageHeight: number | null;
   complete: boolean;
 }
 
@@ -31,17 +34,21 @@ function emptyState(): MutableRunState {
   return {
     evidence: [],
     warnings: [],
+    inputFormat: null,
     pagesTotal: 0,
     pagesProcessed: 0,
     renderedPages: new Set(),
     ocrPages: new Set(),
+    renderAttempts: 0,
     passesUsed: 0,
     fileSizeBytes: 0,
+    sourceImageWidth: null,
+    sourceImageHeight: null,
     complete: true,
   };
 }
 
-function textEvidence(pageText: ExtractedPageText, page: number, expectedModel: AccessKeyModel): CandidateEvidence[] {
+function textEvidence(pageText: DocumentPageText, page: number, expectedModel: AccessKeyModel): CandidateEvidence[] {
   const candidates = [...findCandidatesInText(pageText.orderedText, page, expectedModel), ...findCandidatesInText(pageText.visualLines.join("\n"), page, expectedModel)];
   const unique = new Map<string, CandidateEvidence>();
   for (const candidate of candidates) {
@@ -62,13 +69,17 @@ function metadata(options: ResolvedOptions, state: MutableRunState, startedAt: n
   return {
     performance: options.performance,
     ocrMode: options.ocr,
+    ...(state.inputFormat === null ? {} : { inputFormat: state.inputFormat }),
     passesRequested: options.passes,
     passesUsed: state.passesUsed,
     pagesTotal: state.pagesTotal,
     pagesProcessed: state.pagesProcessed,
     pagesRendered: state.renderedPages.size,
+    renderAttempts: state.renderAttempts,
     ocrPages: state.ocrPages.size,
     fileSizeBytes: state.fileSizeBytes,
+    ...(state.sourceImageWidth === null ? {} : { sourceImageWidth: state.sourceImageWidth }),
+    ...(state.sourceImageHeight === null ? {} : { sourceImageHeight: state.sourceImageHeight }),
     maxPixelsPerPage: options.maxPixelsPerPage,
     maxSourceImagePixels: options.maxSourceImagePixels,
     durationMs: Number((performance.now() - startedAt).toFixed(2)),
@@ -111,8 +122,8 @@ function invalidOptionsResult<TModel extends AccessKeyModel>(expectedModel: TMod
   });
 }
 
-async function withPage<T>(handle: PdfHandle, pageNumber: number, work: (page: PdfPageLike) => Promise<T>): Promise<T> {
-  const page = await handle.document.getPage(pageNumber);
+async function withPage<T>(handle: DocumentHandle, pageNumber: number, work: (page: DocumentPageLike) => Promise<T>): Promise<T> {
+  const page = await handle.getPage(pageNumber);
   try {
     return await work(page);
   } finally {
@@ -120,7 +131,10 @@ async function withPage<T>(handle: PdfHandle, pageNumber: number, work: (page: P
   }
 }
 
-function ocrRecipes(recipes: RenderRecipe[], options: ResolvedOptions): RenderRecipe[] {
+function ocrRecipes(recipes: RenderRecipe[], options: ResolvedOptions, format: DocumentFormat): RenderRecipe[] {
+  if (format !== "pdf") {
+    return recipes;
+  }
   const unrotated = recipes.filter((recipe) => recipe.rotation === 0).sort((left, right) => right.scale - left.scale)[0];
   const selected = unrotated === undefined ? [] : [unrotated];
   if (options.performance === "accurate") {
@@ -129,11 +143,14 @@ function ocrRecipes(recipes: RenderRecipe[], options: ResolvedOptions): RenderRe
   return selected;
 }
 
-async function collectTextEvidence(handle: PdfHandle, state: MutableRunState, pageLimit: number, options: ResolvedOptions, expectedModel: AccessKeyModel, guard: WorkGuard): Promise<number[]> {
+async function collectTextEvidence(handle: DocumentHandle, state: MutableRunState, pageLimit: number, options: ResolvedOptions, expectedModel: AccessKeyModel, guard: WorkGuard): Promise<number[]> {
   const processedPages: number[] = [];
   for (let pageNumber = 1; pageNumber <= pageLimit; pageNumber += 1) {
     guard.check();
-    const candidates = await withPage(handle, pageNumber, async (page) => textEvidence(await extractPageText(page), pageNumber, expectedModel));
+    const candidates = await withPage(handle, pageNumber, async (page) => {
+      const nativeText = page.nativeText();
+      return nativeText === null ? [] : textEvidence(await nativeText, pageNumber, expectedModel);
+    });
     guard.check();
     state.evidence.push(...candidates);
     state.pagesProcessed += 1;
@@ -145,7 +162,7 @@ async function collectTextEvidence(handle: PdfHandle, state: MutableRunState, pa
   return processedPages;
 }
 
-async function collectBarcodeEvidence(handle: PdfHandle, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, expectedModel: AccessKeyModel, guard: WorkGuard): Promise<void> {
+async function collectBarcodeEvidence(handle: DocumentHandle, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, expectedModel: AccessKeyModel, guard: WorkGuard): Promise<void> {
   const exhaustive = options.ocr === "always" || options.performance === "accurate";
   let pending = exhaustive ? [...pages] : pages.filter((page) => !hasPageEvidence(state.evidence, page));
 
@@ -153,7 +170,7 @@ async function collectBarcodeEvidence(handle: PdfHandle, state: MutableRunState,
     return;
   }
 
-  const [{ renderPage }, { readBarcodes }] = await Promise.all([import("./pdf/render-page"), import("./recognition/barcode-reader")]);
+  const { readBarcodes } = await import("./recognition/barcode-reader");
 
   for (let passIndex = 0; passIndex < recipes.length && pending.length > 0; passIndex += 1) {
     const recipe = recipes[passIndex];
@@ -165,9 +182,28 @@ async function collectBarcodeEvidence(handle: PdfHandle, state: MutableRunState,
     for (const pageNumber of pending) {
       guard.check();
       const candidates = await withPage(handle, pageNumber, async (page) => {
-        const rendered = await renderPage(page, recipe, options.maxPixelsPerPage);
-        state.renderedPages.add(pageNumber);
-        return (await readBarcodes(rendered)).flatMap((barcode) => findCandidatesInDecodedValue(barcode.text, pageNumber, barcode.source, passIndex + 1, expectedModel));
+        const collected: CandidateEvidence[] = [];
+        const attemptedSizes = new Set<string>();
+        for (const variant of getBarcodeRenderVariants(recipe, handle.format)) {
+          guard.check();
+          const rendered = await page.render(variant, options.maxPixelsPerPage);
+          state.renderAttempts += 1;
+          try {
+            const sizeKey = `${rendered.width}x${rendered.height}`;
+            if (attemptedSizes.has(sizeKey)) {
+              continue;
+            }
+            attemptedSizes.add(sizeKey);
+            state.renderedPages.add(pageNumber);
+            collected.push(...(await readBarcodes(rendered, handle.format !== "pdf")).flatMap((barcode) => findCandidatesInDecodedValue(barcode.text, pageNumber, barcode.source, passIndex + 1, expectedModel)));
+            if (collected.length > 0) {
+              break;
+            }
+          } finally {
+            rendered.dispose();
+          }
+        }
+        return collected;
       });
       guard.check();
       state.evidence.push(...candidates);
@@ -182,7 +218,7 @@ async function collectBarcodeEvidence(handle: PdfHandle, state: MutableRunState,
   }
 }
 
-async function collectOcrEvidence(handle: PdfHandle, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, expectedModel: AccessKeyModel, guard: WorkGuard): Promise<OcrSession | null> {
+async function collectOcrEvidence(handle: DocumentHandle, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, expectedModel: AccessKeyModel, guard: WorkGuard): Promise<OcrSession | null> {
   if (options.ocr === "never") {
     return null;
   }
@@ -191,23 +227,28 @@ async function collectOcrEvidence(handle: PdfHandle, state: MutableRunState, pag
     return null;
   }
 
-  const selectedRecipes = ocrRecipes(recipes, options);
+  const selectedRecipes = ocrRecipes(recipes, options, handle.format);
   if (selectedRecipes.length === 0) {
     return null;
   }
 
-  const [{ renderPage }, { createOcrSession }] = await Promise.all([import("./pdf/render-page"), import("./recognition/ocr-reader")]);
+  const { createOcrSession } = await import("./recognition/ocr-reader");
   const session = await createOcrSession();
   try {
     for (const pageNumber of pending) {
       for (const recipe of selectedRecipes) {
         guard.check();
         const candidates = await withPage(handle, pageNumber, async (page) => {
-          const rendered = await renderPage(page, recipe, options.maxPixelsPerPage);
-          state.renderedPages.add(pageNumber);
-          state.ocrPages.add(pageNumber);
-          const recognized = await session.recognize(rendered.toPng());
-          return findCandidatesInOcrText(recognized.text, pageNumber, recipes.indexOf(recipe) + 1, recognized.confidence, expectedModel);
+          const rendered = await page.render(recipe, options.maxPixelsPerPage);
+          state.renderAttempts += 1;
+          try {
+            state.renderedPages.add(pageNumber);
+            state.ocrPages.add(pageNumber);
+            const recognized = await session.recognize(rendered.toPng());
+            return findCandidatesInOcrText(recognized.text, pageNumber, recipes.indexOf(recipe) + 1, recognized.confidence, expectedModel);
+          } finally {
+            rendered.dispose();
+          }
         });
         guard.check();
         state.evidence.push(...candidates);
@@ -223,7 +264,7 @@ async function collectOcrEvidence(handle: PdfHandle, state: MutableRunState, pag
   }
 }
 
-async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: PdfInput, expectedModel: TModel, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<TModel>> {
+async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: DocumentInput, expectedModel: TModel, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<TModel>> {
   const startedAt = performance.now();
   let options: ResolvedOptions;
   try {
@@ -237,19 +278,22 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: P
 
   const state = emptyState();
   const guard = new WorkGuard(options, startedAt);
-  let handle: PdfHandle | null = null;
+  let handle: DocumentHandle | null = null;
   let ocrSession: OcrSession | null = null;
   try {
     guard.check();
-    const loaded = await loadPdfInput(input, options.maxFileSizeBytes, {
+    const loaded = await loadDocumentInput(input, options.maxFileSizeBytes, {
       ...(options.requestHeaders === undefined ? {} : { requestHeaders: options.requestHeaders }),
       signal: guard.signal,
     });
     guard.check();
     state.fileSizeBytes = loaded.size;
-    handle = await openPdfDocument(loaded.data, options.maxSourceImagePixels, options.maxPixelsPerPage);
+    state.inputFormat = loaded.format;
+    handle = await openDocument(loaded, options.maxSourceImagePixels, options.maxPixelsPerPage);
     guard.check();
-    state.pagesTotal = handle.document.numPages;
+    state.pagesTotal = handle.numPages;
+    state.sourceImageWidth = handle.sourceImageDimensions?.width ?? null;
+    state.sourceImageHeight = handle.sourceImageDimensions?.height ?? null;
     const pageLimit = Math.min(state.pagesTotal, options.maxPages);
     if (pageLimit < state.pagesTotal) {
       state.complete = false;
@@ -258,7 +302,7 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: P
 
     const processedPages = await collectTextEvidence(handle, state, pageLimit, options, expectedModel, guard);
     if (!(options.stopAfterFirst && state.evidence.length > 0)) {
-      const recipes = getRenderRecipes(options);
+      const recipes = getRenderRecipes(options, handle.format);
       await collectBarcodeEvidence(handle, state, processedPages, recipes, options, expectedModel, guard);
       if (!(options.stopAfterFirst && state.evidence.length > 0)) {
         ocrSession = await collectOcrEvidence(handle, state, processedPages, recipes, options, expectedModel, guard);
@@ -281,12 +325,9 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: P
     const failure =
       resolvedError instanceof ExtractionFailure
         ? resolvedError
-        : new ExtractionFailure("PROCESSING_ERROR", "The PDF could not be processed.", {
+        : new ExtractionFailure("PROCESSING_ERROR", "The document could not be processed.", {
             cause: resolvedError,
           });
-    if (!(resolvedError instanceof ExtractionFailure)) {
-      state.warnings.push(`Internal detail: ${messageFromUnknown(resolvedError)}`);
-    }
     return resultFromState(expectedModel, options, state, startedAt, {
       code: failure.code,
       message: failure.message,
@@ -300,19 +341,19 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: P
 
 /**
  * Extracts validated NF-e (model 55) access keys from a local path, HTTP(S)
- * URL, or in-memory PDF.
+ * URL, or in-memory PDF, JPEG, or PNG document.
  * This function resolves to a JSON-safe result for expected input and processing errors.
  */
-export function extractNFeAccessKeys(input: PdfInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<"55">> {
+export function extractNFeAccessKeys(input: DocumentInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<"55">> {
   return extractAccessKeysForModel(input, "55", optionsInput);
 }
 
 /**
  * Extracts validated NFC-e (model 65) access keys from a local path, HTTP(S)
- * URL, or in-memory PDF.
+ * URL, or in-memory PDF, JPEG, or PNG document.
  * This function resolves to a JSON-safe result for expected input and processing errors.
  */
-export function extractNFCeAccessKeys(input: PdfInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<"65">> {
+export function extractNFCeAccessKeys(input: DocumentInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<"65">> {
   return extractAccessKeysForModel(input, "65", optionsInput);
 }
 

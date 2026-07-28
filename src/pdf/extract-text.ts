@@ -1,3 +1,4 @@
+import type { DocumentPageText } from "../document/types";
 import { ExtractionFailure } from "../errors";
 import type { PdfPageLike, PdfTextItemLike } from "./types";
 
@@ -17,12 +18,6 @@ interface TextLine {
   y: number;
   height: number;
   items: PositionedTextItem[];
-}
-
-export interface ExtractedPageText {
-  orderedText: string;
-  visualLines: string[];
-  hasText: boolean;
 }
 
 function isTextItem(value: unknown): value is PdfTextItemLike {
@@ -70,7 +65,7 @@ function reconstructLines(items: PositionedTextItem[]): string[] {
   }).filter((line) => line.length > 0);
 }
 
-export async function extractPageText(page: PdfPageLike): Promise<ExtractedPageText> {
+export async function extractPageText(page: PdfPageLike): Promise<DocumentPageText> {
   const content = await page.getTextContent();
   if (content.items.length > MAX_TEXT_ITEMS_PER_PAGE) {
     throw new ExtractionFailure("RESOURCE_LIMIT", "A PDF page contains too many text items to process safely.");

@@ -11,7 +11,7 @@ function normalizedText(value: string): string {
   return value.normalize("NFKC").replace(/\u00a0/g, " ").toUpperCase();
 }
 
-function isNearLabel(text: string, start: number): boolean {
+export function isNearAccessKeyLabel(text: string, start: number): boolean {
   const context = text.slice(Math.max(0, start - 120), start + 12);
   return LABEL_PATTERN.test(context);
 }
@@ -38,7 +38,7 @@ export function findCandidatesInText(text: string, page: number, expectedModel: 
     if ((before !== undefined && ALPHANUMERIC_PATTERN.test(before)) || (after !== undefined && ALPHANUMERIC_PATTERN.test(after))) {
       continue;
     }
-    addIfValid(output, seen, accessKey, page, "pdf-text", 0, isNearLabel(normalized, start), expectedModel);
+    addIfValid(output, seen, accessKey, page, "pdf-text", 0, isNearAccessKeyLabel(normalized, start), expectedModel);
   }
 
   for (let start = 0; start < normalized.length; start += 1) {
@@ -65,7 +65,7 @@ export function findCandidatesInText(text: string, page: number, expectedModel: 
 
       cursor += 1;
       if (accessKey.length === 44) {
-        const nearLabel = isNearLabel(normalized, start);
+        const nearLabel = isNearAccessKeyLabel(normalized, start);
         const rawSpan = normalized.slice(start, cursor);
         let lookahead = cursor;
         while (SEPARATOR_PATTERN.test(normalized[lookahead] ?? "")) {

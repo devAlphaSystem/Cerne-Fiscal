@@ -52,6 +52,18 @@ function componentsMatchModel<TModel extends AccessKeyModel>(
   return components !== null && components.model === expectedModel && components.documentType !== null;
 }
 
+function deduplicateDerivedEvidence(items: CandidateEvidence[]): CandidateEvidence[] {
+  const unique = new Map<string, CandidateEvidence>();
+  for (const item of items) {
+    const signature = `${item.page}:${item.source}`;
+    const current = unique.get(signature);
+    if (current === undefined || evidenceScore(item) > evidenceScore(current)) {
+      unique.set(signature, item);
+    }
+  }
+  return [...unique.values()];
+}
+
 export function mergeEvidence<TModel extends AccessKeyModel>(evidence: CandidateEvidence[], expectedModel: TModel): ExtractedAccessKey<TModel>[] {
   const grouped = new Map<string, CandidateEvidence[]>();
   for (const item of evidence) {
@@ -61,13 +73,14 @@ export function mergeEvidence<TModel extends AccessKeyModel>(evidence: Candidate
   }
 
   const results: ExtractedAccessKey<TModel>[] = [];
-  for (const [accessKey, items] of grouped) {
+  for (const [accessKey, groupedItems] of grouped) {
     const validation = validateAccessKey(accessKey);
     const components = validation.components;
     if (!validation.isValid || !componentsMatchModel(components, expectedModel)) {
       continue;
     }
 
+    const items = deduplicateDerivedEvidence(groupedItems);
     const sources = new Set(items.map((item) => item.source));
     const pages = [...new Set(items.map((item) => item.page))].sort((a, b) => a - b);
     let precisionScore = Math.max(...items.map(evidenceScore));

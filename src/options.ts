@@ -1,6 +1,6 @@
 import { validateHeaderName, validateHeaderValue } from "node:http";
 
-import type { ExtractOptions, OcrMode, PerformanceProfile } from "./types";
+import type { DocumentFormat, ExtractOptions, OcrMode, PerformanceProfile } from "./types";
 
 const MEBIBYTE = 1024 * 1024;
 
@@ -150,7 +150,17 @@ export function resolveOptions(options: ExtractOptions = {}): ResolvedOptions {
 
 export interface RenderRecipe {
   scale: number;
-  rotation: 0 | 90 | 270;
+  rotation: 0 | 90 | 180 | 270;
+  /** Moderate deterministic contrast stretch, used only by image documents. */
+  contrast?: boolean;
+  /** Render luminance into all color channels, used only by image documents. */
+  grayscale?: boolean;
+  /** Apply the conservative content crop, used only after the full-image pass. */
+  crop?: boolean;
+  /** Allow a bounded upscale for unusually small source images. */
+  upscaleSmall?: boolean;
+  /** Downscale-only pixel target which helps dotted thermal prints, used only by image documents. */
+  targetPixels?: number;
 }
 
 const RECIPES: Record<PerformanceProfile, readonly RenderRecipe[]> = {
@@ -177,6 +187,54 @@ const RECIPES: Record<PerformanceProfile, readonly RenderRecipe[]> = {
   ],
 };
 
-export function getRenderRecipes(options: ResolvedOptions): RenderRecipe[] {
-  return RECIPES[options.performance].slice(0, options.passes);
+/**
+ * Image recipes use scale 1 as the natural (EXIF-oriented) image size. The
+ * first pass always keeps the full EXIF-oriented source without crop, filter,
+ * or artificial upscale. Later passes add a conservative crop, a bounded
+ * resize, grayscale/contrast, and the discrete rotations photographs commonly
+ * need.
+ */
+const IMAGE_DOWNSCALE_TARGET_PIXELS = 1_200_000;
+
+const IMAGE_RECIPES: Record<PerformanceProfile, readonly RenderRecipe[]> = {
+  fast: [
+    { scale: 1, rotation: 0 },
+    { scale: 1, rotation: 0, targetPixels: IMAGE_DOWNSCALE_TARGET_PIXELS, contrast: true, grayscale: true, crop: true, upscaleSmall: true },
+    { scale: 1, rotation: 90, crop: true },
+    { scale: 1, rotation: 270, crop: true },
+    { scale: 1, rotation: 180, crop: true },
+  ],
+  balanced: [
+    { scale: 1, rotation: 0 },
+    { scale: 1, rotation: 0, targetPixels: IMAGE_DOWNSCALE_TARGET_PIXELS, contrast: true, grayscale: true, crop: true, upscaleSmall: true },
+    { scale: 1, rotation: 90, crop: true },
+    { scale: 1, rotation: 270, crop: true },
+    { scale: 1, rotation: 180, crop: true },
+  ],
+  accurate: [
+    { scale: 1, rotation: 0 },
+    { scale: 1, rotation: 0, targetPixels: IMAGE_DOWNSCALE_TARGET_PIXELS, contrast: true, grayscale: true, crop: true, upscaleSmall: true },
+    { scale: 1, rotation: 90, crop: true },
+    { scale: 1, rotation: 270, crop: true },
+    { scale: 1, rotation: 180, crop: true },
+  ],
+};
+
+export function getRenderRecipes(options: ResolvedOptions, format: DocumentFormat = "pdf"): RenderRecipe[] {
+  const recipes = format === "pdf" ? RECIPES[options.performance] : IMAGE_RECIPES[options.performance];
+  return recipes.slice(0, options.passes);
+}
+
+/**
+ * Degraded thermal prints decode at unpredictable sizes, so the image
+ * downscale pass probes a short deterministic ladder of one-step render
+ * sizes instead of betting on a single target.
+ */
+const IMAGE_BARCODE_TARGET_LADDER = [4_500_000, 2_200_000, 1_450_000, 950_000] as const;
+
+export function getBarcodeRenderVariants(recipe: RenderRecipe, format: DocumentFormat): RenderRecipe[] {
+  if (format === "pdf" || recipe.targetPixels === undefined) {
+    return [recipe];
+  }
+  return IMAGE_BARCODE_TARGET_LADDER.map((targetPixels) => ({ ...recipe, targetPixels }));
 }

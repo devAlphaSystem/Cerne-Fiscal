@@ -14,7 +14,9 @@ interface ParsedCliArguments {
 
 const HELP = {
   name: "Cerne Fiscal",
-  usage: "cerne-fiscal <file-or-url> --document-type nfe|nfce [--performance fast|balanced|accurate] [--passes 1..5]",
+  usage: "cerne-fiscal <document-path-or-url> --document-type nfe|nfce [--performance fast|balanced|accurate] [--passes 1..5]",
+  inputFormats: ["pdf", "jpeg", "png"],
+  examples: ["cerne-fiscal ./nota.pdf --document-type nfe --pretty", "cerne-fiscal ./cupom.jpg --document-type nfce --performance balanced", "cerne-fiscal https://documents.example/cupom.png --document-type nfce --pretty"],
   options: ["--document-type <nfe|nfce>", "--performance <profile>", "--passes <number>", "--ocr <never|fallback|always>", "--max-pages <number>", "--max-file-size <bytes>", "--max-pixels <number>", "--max-source-pixels <number>", "--timeout-ms <number>", "--first", "--pretty", "--help"],
 } as const;
 
@@ -106,7 +108,7 @@ export function parseCliArguments(args: string[]): ParsedCliArguments | typeof H
     }
   }
   if (sources.length !== 1) {
-    throw new CliArgumentError("Exactly one PDF path or HTTP(S) URL is required.");
+    throw new CliArgumentError("Exactly one document path or HTTP(S) URL (PDF, JPEG, or PNG) is required.");
   }
   if (documentType === undefined) {
     throw new CliArgumentError("--document-type is required and must be nfe or nfce.");
@@ -129,6 +131,7 @@ function cliError(message: string): ExtractionResult {
       pagesTotal: 0,
       pagesProcessed: 0,
       pagesRendered: 0,
+      renderAttempts: 0,
       ocrPages: 0,
       fileSizeBytes: 0,
       maxPixelsPerPage: 12_000_000,

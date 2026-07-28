@@ -1,17 +1,9 @@
+import type { RenderedPage } from "../document/types";
 import { ExtractionFailure } from "../errors";
 import type { RenderRecipe } from "../options";
 import type { PdfPageLike } from "./types";
 
 const MAX_CANVAS_DIMENSION = 32_767;
-
-export interface RenderedPage {
-  width: number;
-  height: number;
-  appliedScale: number;
-  rotation: number;
-  getPixels(): Uint8ClampedArray;
-  toPng(): Buffer;
-}
 
 export async function renderPage(page: PdfPageLike, recipe: RenderRecipe, maxPixels: number): Promise<RenderedPage> {
   const { createCanvas } = await import("@napi-rs/canvas");
@@ -46,8 +38,9 @@ export async function renderPage(page: PdfPageLike, recipe: RenderRecipe, maxPix
   if (width > MAX_CANVAS_DIMENSION || height > MAX_CANVAS_DIMENSION || width * height > maxPixels) {
     throw new ExtractionFailure("INVALID_PDF", "A PDF page exceeds the supported render dimensions.");
   }
-  const canvas = createCanvas(width, height);
-  const context = canvas.getContext("2d");
+  const createdCanvas = createCanvas(width, height);
+  let canvas: typeof createdCanvas | null = createdCanvas;
+  let context: ReturnType<typeof createdCanvas.getContext> | null = canvas.getContext("2d");
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, width, height);
   await page.render({
@@ -65,11 +58,26 @@ export async function renderPage(page: PdfPageLike, recipe: RenderRecipe, maxPix
     appliedScale: scale,
     rotation,
     getPixels(): Uint8ClampedArray {
+      if (context === null) {
+        throw new ExtractionFailure("PROCESSING_ERROR", "The rendered PDF surface is already released.");
+      }
       pixels ??= context.getImageData(0, 0, width, height).data;
       return pixels;
     },
     toPng(): Buffer {
+      if (canvas === null) {
+        throw new ExtractionFailure("PROCESSING_ERROR", "The rendered PDF surface is already released.");
+      }
       return canvas.toBuffer("image/png");
+    },
+    dispose(): void {
+      pixels = null;
+      context = null;
+      if (canvas !== null) {
+        canvas.width = 1;
+        canvas.height = 1;
+        canvas = null;
+      }
     },
   };
 }

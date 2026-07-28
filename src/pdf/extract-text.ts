@@ -65,6 +65,14 @@ function reconstructLines(items: PositionedTextItem[]): string[] {
   }).filter((line) => line.length > 0);
 }
 
+/**
+ * Extracts bounded native text from a PDF page in source order and reconstructed visual lines.
+ *
+ * @param {PdfPageLike} page - The PDF page whose native text content should be read.
+ * @returns {Promise<DocumentPageText>} Resolves with ordered text, visual lines, and a non-whitespace indicator.
+ * @throws {ExtractionFailure} If the page exceeds text-item or character safety limits.
+ * @throws {Error} If the PDF runtime cannot retrieve the page text content.
+ */
 export async function extractPageText(page: PdfPageLike): Promise<DocumentPageText> {
   const content = await page.getTextContent();
   if (content.items.length > MAX_TEXT_ITEMS_PER_PAGE) {

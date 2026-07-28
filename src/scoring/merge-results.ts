@@ -64,6 +64,14 @@ function deduplicateDerivedEvidence(items: CandidateEvidence[]): CandidateEviden
   return [...unique.values()];
 }
 
+/**
+ * Merges repeated evidence into validated, confidence-ranked access keys for one fiscal model.
+ *
+ * @template {AccessKeyModel} TModel - The NF-e or NFC-e model preserved in the result type.
+ * @param {Array<CandidateEvidence>} evidence - The text, barcode, and OCR candidates to consolidate.
+ * @param {TModel} expectedModel - The fiscal model that accepted results must match.
+ * @returns {Array<ExtractedAccessKey<TModel>>} The validated access keys ordered by confidence and first page.
+ */
 export function mergeEvidence<TModel extends AccessKeyModel>(evidence: CandidateEvidence[], expectedModel: TModel): ExtractedAccessKey<TModel>[] {
   const grouped = new Map<string, CandidateEvidence[]>();
   for (const item of evidence) {

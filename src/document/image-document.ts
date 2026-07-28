@@ -340,6 +340,16 @@ function renderImage(canvasModule: CanvasModule, image: DecodedImage, fullSource
   };
 }
 
+/**
+ * Opens a validated JPEG or PNG as a single-page document with reusable render operations.
+ *
+ * @param {Uint8Array} data - The complete encoded image bytes.
+ * @param {"jpeg"|"png"} format - The detected image container format.
+ * @param {number} maxSourceImagePixels - The maximum permitted decoded image area.
+ * @returns {Promise<DocumentHandle>} Resolves with a single-page image document handle.
+ * @throws {ExtractionFailure} If the image container or decoded dimensions are invalid, pixel decoding fails, or source-image limits are exceeded.
+ * @throws {Error} If the canvas runtime cannot be loaded.
+ */
 export async function openImageDocument(data: Uint8Array, format: "jpeg" | "png", maxSourceImagePixels: number): Promise<DocumentHandle> {
   const probe = probeImage(data, format);
   validateImageDimensions(probe.width, probe.height, maxSourceImagePixels);

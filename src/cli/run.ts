@@ -2,7 +2,13 @@ import { extractNFCeAccessKeys, extractNFeAccessKeys } from "../extractor";
 import { elapsedMilliseconds, startTimer } from "../timing";
 import type { ExtractOptions, ExtractionResult } from "../types";
 
+/**
+ * Defines the output dependency used to emit CLI responses.
+ */
 export interface CliIo {
+  /**
+   * Provides the writable destination for serialized command results.
+   */
   stdout: Pick<NodeJS.WriteStream, "write">;
 }
 
@@ -38,6 +44,13 @@ function requiredValue(args: string[], index: number, option: string): string {
   return value;
 }
 
+/**
+ * Parses command-line tokens into one fiscal extraction request.
+ *
+ * @param {Array<string>} args - The command-line tokens following the executable name.
+ * @returns {ParsedCliArguments|typeof HELP} The parsed request, or the help descriptor when `--help` is present.
+ * @throws {CliArgumentError} If an option is unknown, malformed, missing a value, or the source contract is not satisfied.
+ */
 export function parseCliArguments(args: string[]): ParsedCliArguments | typeof HELP {
   if (args.includes("--help")) {
     return HELP;
@@ -146,6 +159,14 @@ function cliError(message: string): ExtractionResult {
   };
 }
 
+/**
+ * Runs the fiscal command-line workflow and writes one JSON response.
+ *
+ * @param {Array<string>} args - The command-line tokens to parse and execute.
+ * @param {CliIo} [io={ stdout: process.stdout }] - The output dependency used for the JSON response.
+ * @returns {Promise<number>} Resolves with `0` for help or a result containing a match, `2` for `not_found`, or `1` otherwise.
+ * @throws {Error} If the output destination fails while writing the fallback error response.
+ */
 export async function runCli(args: string[], io: CliIo = { stdout: process.stdout }): Promise<number> {
   const startedAt = startTimer();
   try {

@@ -84,6 +84,16 @@ function isBoundedCluster(text: string, start: number, length: number): boolean 
   return !/[A-Z0-9]/.test(text[start - 1] ?? "") && !/[A-Z0-9]/.test(text[after] ?? "");
 }
 
+/**
+ * Finds valid model-specific access keys in OCR text, including safe single-character corrections.
+ *
+ * @param {string} text - Supplies OCR text to inspect.
+ * @param {number} page - Identifies the 1-based source page for emitted evidence.
+ * @param {number} pass - Identifies the 1-based render pass used for OCR.
+ * @param {number} confidence - Supplies OCR engine confidence from 0 through 100.
+ * @param {AccessKeyModel} expectedModel - Selects the fiscal model accepted in the output.
+ * @returns {Array<CandidateEvidence>} Returns exact and unambiguous corrected evidence found in the text.
+ */
 export function findCandidatesInOcrText(text: string, page: number, pass: number, confidence: number, expectedModel: AccessKeyModel): CandidateEvidence[] {
   const normalized = text.normalize("NFKC").toUpperCase();
   const exact = findCandidatesInText(normalized, page, expectedModel).map((candidate) => ({

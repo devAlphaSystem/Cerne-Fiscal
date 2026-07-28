@@ -12,14 +12,35 @@ const WINDOWS_DRIVE_PATH = /^[a-z]:/i;
 const HTTP_URL = /^https?:\/\//i;
 const URI_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 
+/**
+ * Represents validated document bytes together with their detected format and size.
+ */
 export interface LoadedInput {
+  /**
+   * Provides an owned or safely copied view of the document bytes.
+   */
   data: Uint8Array;
+  /**
+   * Reports the accepted document size in bytes.
+   */
   size: number;
+  /**
+   * Identifies the format detected from the document signature.
+   */
   format: DocumentFormat;
 }
 
+/**
+ * Defines request-specific controls used while loading a document input.
+ */
 export interface LoadDocumentInputControls {
+  /**
+   * Provides normalized headers for HTTP and HTTPS document requests.
+   */
   requestHeaders?: Readonly<Record<string, string>>;
+  /**
+   * Provides cancellation for remote downloads and local file reads.
+   */
   signal?: AbortSignal;
 }
 
@@ -253,6 +274,18 @@ async function downloadDocument(initialUrl: URL, maxFileSizeBytes: number, contr
   }
 }
 
+/**
+ * Loads a local, remote, or in-memory document into validated bytes with a detected format.
+ *
+ * @param {DocumentInput} input - The file path, HTTP(S) URL, `ArrayBuffer`, or byte array to load.
+ * @param {number} maxFileSizeBytes - The maximum accepted document size in bytes.
+ * @param {LoadDocumentInputControls} [controls={}] - Optional remote headers and cancellation signal.
+ * @returns {Promise<LoadedInput>} Resolves with bounded document bytes, size, and detected format.
+ * @throws {ExtractionFailure} If the input, path, response, format, headers, or resource limits are invalid.
+ * @throws {Error} If a remote operation is aborted by the supplied signal.
+ * @throws {TypeError} If the supplied `ArrayBuffer` has been detached.
+ * @throws {RangeError} If an in-memory input cannot be copied within available memory.
+ */
 export async function loadDocumentInput(input: DocumentInput, maxFileSizeBytes: number, controls: LoadDocumentInputControls = {}): Promise<LoadedInput> {
   if (typeof input === "string") {
     const remoteUrl = remoteUrlFromInput(input);

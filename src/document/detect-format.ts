@@ -15,6 +15,12 @@ function hasPdfSignature(data: Uint8Array): boolean {
   return prefix.indexOf("%PDF-") >= 0;
 }
 
+/**
+ * Detects a supported document format from its leading bytes without trusting a file extension.
+ *
+ * @param {Uint8Array} data - The document bytes to inspect.
+ * @returns {DocumentFormat|null} The detected PDF, JPEG, or PNG format, or `null` when no signature matches.
+ */
 export function detectDocumentFormat(data: Uint8Array): DocumentFormat | null {
   if (hasPngSignature(data)) {
     return "png";

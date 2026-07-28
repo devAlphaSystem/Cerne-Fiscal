@@ -7,9 +7,6 @@ node_modules
 data/
 dados/
 
-# Demo app with its own package.json
-live/
-
 # Generated benchmark artifacts
 bench/fixtures/
 bench/results/

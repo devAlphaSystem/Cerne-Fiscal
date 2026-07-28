@@ -42,21 +42,67 @@ const PROFILE_DEFAULTS: Record<PerformanceProfile, ProfileDefaults> = {
   },
 };
 
+/**
+ * Represents validated extraction settings with profile defaults applied.
+ */
 export interface ResolvedOptions {
+  /**
+   * Identifies the selected performance profile.
+   */
   performance: PerformanceProfile;
+  /**
+   * Specifies the number of render and recognition passes to use.
+   */
   passes: number;
+  /**
+   * Specifies when OCR participates in recognition.
+   */
   ocr: OcrMode;
+  /**
+   * Limits the number of pages processed from the beginning of a document.
+   */
   maxPages: number;
+  /**
+   * Limits accepted document size in bytes.
+   */
   maxFileSizeBytes: number;
+  /**
+   * Limits pixel allocation for an individual rendered page.
+   */
   maxPixelsPerPage: number;
+  /**
+   * Limits the declared pixel area of a source image.
+   */
   maxSourceImagePixels: number;
+  /**
+   * Limits total extraction time in milliseconds, with zero disabling the deadline.
+   */
   timeoutMs: number;
+  /**
+   * Indicates whether recognition stops after the first valid key is found.
+   */
   stopAfterFirst: boolean;
+  /**
+   * Provides normalized caller headers for an HTTP(S) document request.
+   */
   requestHeaders?: Readonly<Record<string, string>>;
+  /**
+   * Provides the caller signal used to cancel extraction.
+   */
   signal?: AbortSignal;
 }
 
+/**
+ * Reports an invalid extraction option or an unsupported option combination.
+ *
+ * @class
+ */
 export class InvalidOptionsError extends Error {
+  /**
+   * Creates an invalid-options error with a safe caller-facing message.
+   *
+   * @param {string} message - Explains which extraction option is invalid.
+   */
   public constructor(message: string) {
     super(message);
     this.name = "InvalidOptionsError";
@@ -119,6 +165,16 @@ function normalizeRequestHeaders(requestHeaders: ExtractOptions["requestHeaders"
   return Object.freeze(normalized);
 }
 
+/**
+ * Validates extraction options and applies defaults from the selected performance profile.
+ *
+ * @param {ExtractOptions} [options={}] - Supplies caller overrides for extraction behavior and limits.
+ * @returns {ResolvedOptions} Returns normalized settings ready for the extraction pipeline.
+ * @throws {InvalidOptionsError} Throws when an option is outside its supported range or headers are invalid.
+ *
+ * @example
+ * const options = resolveOptions({ performance: "fast", passes: 1, timeoutMs: 15_000 });
+ */
 export function resolveOptions(options: ExtractOptions = {}): ResolvedOptions {
   const performance = options.performance ?? "balanced";
   if (!Object.hasOwn(PROFILE_DEFAULTS, performance)) {
@@ -148,13 +204,37 @@ export function resolveOptions(options: ExtractOptions = {}): ResolvedOptions {
   };
 }
 
+/**
+ * Describes one page-rendering transformation used by barcode recognition or OCR.
+ */
 export interface RenderRecipe {
+  /**
+   * Scales the source page before recognition.
+   */
   scale: number;
+  /**
+   * Rotates the rendered page clockwise by a supported right angle.
+   */
   rotation: 0 | 90 | 180 | 270;
+  /**
+   * Enables contrast stretching when the source has a narrow luminance range.
+   */
   contrast?: boolean;
+  /**
+   * Converts rendered pixels to grayscale before recognition.
+   */
   grayscale?: boolean;
+  /**
+   * Crops uniform outer margins when a safe content boundary is detected.
+   */
   crop?: boolean;
+  /**
+   * Enlarges small source images before recognition.
+   */
   upscaleSmall?: boolean;
+  /**
+   * Targets a maximum output pixel area for this recipe.
+   */
   targetPixels?: number;
 }
 
@@ -208,6 +288,13 @@ const IMAGE_RECIPES: Record<PerformanceProfile, readonly RenderRecipe[]> = {
   ],
 };
 
+/**
+ * Selects the ordered render recipes enabled by resolved options and document format.
+ *
+ * @param {ResolvedOptions} options - Supplies the validated profile and pass count.
+ * @param {DocumentFormat} [format="pdf"] - Identifies the input format whose recipes are required.
+ * @returns {Array<RenderRecipe>} Returns a mutable copy containing at most the requested number of passes.
+ */
 export function getRenderRecipes(options: ResolvedOptions, format: DocumentFormat = "pdf"): RenderRecipe[] {
   const recipes = format === "pdf" ? RECIPES[options.performance] : IMAGE_RECIPES[options.performance];
   return recipes.slice(0, options.passes);
@@ -215,6 +302,13 @@ export function getRenderRecipes(options: ResolvedOptions, format: DocumentForma
 
 const IMAGE_BARCODE_TARGET_LADDER = [4_500_000, 2_200_000, 1_450_000, 950_000] as const;
 
+/**
+ * Expands an image barcode recipe into descending pixel targets for resilient decoding.
+ *
+ * @param {RenderRecipe} recipe - Supplies the base render transformation.
+ * @param {DocumentFormat} format - Identifies whether PDF or image rendering is being configured.
+ * @returns {Array<RenderRecipe>} Returns the original recipe when no expansion applies, otherwise target-specific image variants.
+ */
 export function getBarcodeRenderVariants(recipe: RenderRecipe, format: DocumentFormat): RenderRecipe[] {
   if (format === "pdf" || recipe.targetPixels === undefined) {
     return [recipe];

@@ -2,6 +2,11 @@ import { ExtractionFailure } from "./errors";
 import type { ResolvedOptions } from "./options";
 import { elapsedMilliseconds, startTimer, type MonotonicTimestamp } from "./timing";
 
+/**
+ * Coordinates caller cancellation and elapsed-time limits across extraction stages.
+ *
+ * @class
+ */
 export class WorkGuard {
   readonly #startedAt: MonotonicTimestamp;
   readonly #options: ResolvedOptions;
@@ -10,6 +15,12 @@ export class WorkGuard {
   readonly #timeout?: NodeJS.Timeout;
   #stopReason: "aborted" | "timeout" | null = null;
 
+  /**
+   * Creates a work guard for one extraction run.
+   *
+   * @param {ResolvedOptions} options - Supplies the resolved timeout and optional caller signal.
+   * @param {MonotonicTimestamp} [startedAt=startTimer()] - Supplies the run's monotonic start time.
+   */
   public constructor(options: ResolvedOptions, startedAt = startTimer()) {
     this.#options = options;
     this.#startedAt = startedAt;
@@ -39,6 +50,11 @@ export class WorkGuard {
     return this.#controller.signal;
   }
 
+  /**
+   * Verifies that extraction may continue under the configured cancellation constraints.
+   *
+   * @throws {ExtractionFailure} Throws when the caller aborts or the configured deadline expires.
+   */
   public check(): void {
     if (this.#options.signal?.aborted === true || this.#stopReason === "aborted") {
       this.#stop("aborted");
@@ -50,6 +66,9 @@ export class WorkGuard {
     }
   }
 
+  /**
+   * Releases the timeout and caller-signal listener owned by this guard.
+   */
   public dispose(): void {
     if (this.#timeout !== undefined) {
       clearTimeout(this.#timeout);

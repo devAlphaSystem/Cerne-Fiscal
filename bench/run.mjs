@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { clearInterval, setImmediate, setInterval } from "node:timers";
 import { fileURLToPath } from "node:url";
 
 const FIXTURE_DIRECTORY = fileURLToPath(new URL("./fixtures/", import.meta.url));
@@ -77,24 +78,71 @@ if (selected.length === 0) {
   throw new Error(`Nenhum caso corresponde a "${options.filter}".`);
 }
 
+const MEBIBYTE = 1024 * 1024;
+
+async function settle() {
+  if (typeof globalThis.gc !== "function") {
+    return;
+  }
+  for (let round = 0; round < 3; round += 1) {
+    globalThis.gc();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+/**
+ * Roda uma execução medindo tempo e pico de RSS. O pico é o número que dimensiona
+ * o container; a memória residual entre execuções é baixa.
+ */
+async function measure(work) {
+  await settle();
+  const baseRss = process.memoryUsage.rss();
+  let peakRss = baseRss;
+  const sampler = setInterval(() => {
+    const rss = process.memoryUsage.rss();
+    if (rss > peakRss) {
+      peakRss = rss;
+    }
+  }, 10);
+  sampler.unref();
+  const startedAt = process.hrtime.bigint();
+  try {
+    const result = await work();
+    return {
+      result,
+      ms: Number(process.hrtime.bigint() - startedAt) / 1e6,
+      peakMb: Math.max(0, peakRss - baseRss) / MEBIBYTE,
+    };
+  } finally {
+    clearInterval(sampler);
+  }
+}
+
 const rows = [];
 for (const [fixture, performance] of selected) {
   const data = new Uint8Array(readFileSync(join(FIXTURE_DIRECTORY, fixture)));
   const timings = [];
+  const peaks = [];
   let snapshot = null;
   for (let attempt = 0; attempt < options.repeats; attempt += 1) {
-    const startedAt = process.hrtime.bigint();
-    const result = await extractNFeAccessKeys(data, { performance });
-    timings.push(Number(process.hrtime.bigint() - startedAt) / 1e6);
-    snapshot ??= withoutTiming(result);
+    const measured = await measure(() => extractNFeAccessKeys(data, { performance }));
+    timings.push(measured.ms);
+    peaks.push(measured.peakMb);
+    snapshot ??= withoutTiming(measured.result);
   }
   const name = `${fixture} [${performance}]`;
-  rows.push({ case: name, bestMs: Number(Math.min(...timings).toFixed(1)), snapshot });
-  console.log(`  ${name.padEnd(38)} ${Math.min(...timings).toFixed(0).padStart(7)} ms  ${snapshot.status.padEnd(10)} ${snapshot.results.length} resultado(s)`);
+  const bestMs = Number(Math.min(...timings).toFixed(1));
+  const peakMb = Number(Math.min(...peaks).toFixed(1));
+  rows.push({ case: name, bestMs, peakMb, snapshot });
+  console.log(`  ${name.padEnd(38)} ${bestMs.toFixed(0).padStart(7)} ms ${peakMb.toFixed(0).padStart(5)} MB  ${snapshot.status.padEnd(10)} ${snapshot.results.length} resultado(s)`);
 }
 
 const totalMs = rows.reduce((sum, row) => sum + row.bestMs, 0);
-console.log(`\ntotal ${totalMs.toFixed(0)} ms`);
+const maxPeakMb = Math.max(...rows.map((row) => row.peakMb));
+console.log(`\ntotal ${totalMs.toFixed(0)} ms  ·  pico máximo ${maxPeakMb.toFixed(0)} MB`);
+if (typeof globalThis.gc !== "function") {
+  console.log("dica: rode com `node --expose-gc bench/run.mjs` para picos de memória estáveis.");
+}
 
 if (options.save !== null) {
   mkdirSync(RESULT_DIRECTORY, { recursive: true });
@@ -106,24 +154,32 @@ if (options.compare !== null) {
   const baseline = new Map(loadResults(options.compare).map((row) => [row.case, row]));
   let differences = 0;
   let baselineTotal = 0;
+  let baselinePeak = 0;
   console.log(`\ncomparando com ${options.compare}\n`);
-  console.log(`${"caso".padEnd(38)} ${"antes".padStart(9)} ${"depois".padStart(9)} ${"delta".padStart(8)}   saída`);
+  console.log(`${"caso".padEnd(38)} ${"ms antes".padStart(9)} ${"ms depois".padStart(9)} ${"Δt".padStart(6)} ${"MB antes".padStart(9)} ${"MB depois".padStart(9)} ${"Δm".padStart(6)}   saída`);
   for (const row of rows) {
     const previous = baseline.get(row.case);
     if (previous === undefined) {
-      console.log(`${row.case.padEnd(38)} ${"—".padStart(9)} ${String(row.bestMs).padStart(9)} ${"—".padStart(8)}   caso novo`);
+      console.log(`${row.case.padEnd(38)} ${"—".padStart(9)} ${String(row.bestMs).padStart(9)} ${"—".padStart(6)} ${"—".padStart(9)} ${String(row.peakMb).padStart(9)} ${"—".padStart(6)}   caso novo`);
       continue;
     }
     baselineTotal += previous.bestMs;
+    baselinePeak = Math.max(baselinePeak, previous.peakMb ?? 0);
     const identical = JSON.stringify(previous.snapshot) === JSON.stringify(row.snapshot);
     if (!identical) {
       differences += 1;
     }
-    const delta = `${((row.bestMs / previous.bestMs - 1) * 100).toFixed(0)}%`;
-    console.log(`${row.case.padEnd(38)} ${String(previous.bestMs).padStart(9)} ${String(row.bestMs).padStart(9)} ${delta.padStart(8)}   ${identical ? "idêntica" : "*** DIFERENTE ***"}`);
+    const timeDelta = `${((row.bestMs / previous.bestMs - 1) * 100).toFixed(0)}%`;
+    const hasPeak = typeof previous.peakMb === "number" && previous.peakMb > 0;
+    const peakBefore = hasPeak ? String(previous.peakMb) : "—";
+    const peakDelta = hasPeak ? `${((row.peakMb / previous.peakMb - 1) * 100).toFixed(0)}%` : "—";
+    console.log(`${row.case.padEnd(38)} ${String(previous.bestMs).padStart(9)} ${String(row.bestMs).padStart(9)} ${timeDelta.padStart(6)} ${peakBefore.padStart(9)} ${String(row.peakMb).padStart(9)} ${peakDelta.padStart(6)}   ${identical ? "idêntica" : "*** DIFERENTE ***"}`);
   }
   if (baselineTotal > 0) {
     console.log(`\ntotal ${baselineTotal.toFixed(0)} ms -> ${totalMs.toFixed(0)} ms  (${((totalMs / baselineTotal - 1) * 100).toFixed(0)}%)`);
+  }
+  if (baselinePeak > 0) {
+    console.log(`pico máximo ${baselinePeak.toFixed(0)} MB -> ${maxPeakMb.toFixed(0)} MB  (${((maxPeakMb / baselinePeak - 1) * 100).toFixed(0)}%)`);
   }
   console.log(differences === 0 ? "todas as saídas idênticas" : `${differences} caso(s) com saída diferente`);
   if (differences > 0) {

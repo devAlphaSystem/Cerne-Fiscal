@@ -1,8 +1,20 @@
 import { ExtractionFailure } from "../errors";
 
+/**
+ * Represents dimensions and orientation read directly from an image container.
+ */
 export interface ImageProbe {
+  /**
+   * Reports the encoded image width in pixels.
+   */
   width: number;
+  /**
+   * Reports the encoded image height in pixels.
+   */
   height: number;
+  /**
+   * Reports the normalized EXIF orientation, using `1` when no usable tag is present.
+   */
   orientation: number;
 }
 
@@ -170,10 +182,26 @@ function probeJpeg(data: Uint8Array): ImageProbe {
   throw new ExtractionFailure("INVALID_IMAGE", "The JPEG header is truncated or malformed.");
 }
 
+/**
+ * Reads encoded dimensions and orientation from a JPEG or PNG container before decoding pixels.
+ *
+ * @param {Uint8Array} data - The complete encoded image bytes.
+ * @param {"jpeg"|"png"} format - The container format already identified from its signature.
+ * @returns {ImageProbe} The encoded dimensions and applicable EXIF orientation.
+ * @throws {ExtractionFailure} If the image header or required PNG chunk structure is malformed.
+ */
 export function probeImage(data: Uint8Array, format: "jpeg" | "png"): ImageProbe {
   return format === "png" ? probePng(data) : probeJpeg(data);
 }
 
+/**
+ * Validates image dimensions against canvas and configured resource limits.
+ *
+ * @param {number} width - The image width in pixels.
+ * @param {number} height - The image height in pixels.
+ * @param {number} maxSourceImagePixels - The maximum permitted source pixel area.
+ * @throws {ExtractionFailure} If an axis or total area is invalid or exceeds a supported limit.
+ */
 export function validateImageDimensions(width: number, height: number, maxSourceImagePixels: number): void {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
     throw new ExtractionFailure("INVALID_IMAGE", "The image declares invalid dimensions.");

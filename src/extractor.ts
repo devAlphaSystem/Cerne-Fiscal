@@ -409,11 +409,39 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: D
   return finalizeResultDuration(result, startedAt);
 }
 
+/**
+ * Extracts and validates NF-e model 55 access keys from a supported document input.
+ *
+ * @param {DocumentInput} input - Supplies a local path, HTTP(S) URL, or in-memory document bytes.
+ * @param {ExtractOptions} [optionsInput={}] - Configures recognition depth, resource limits, and cancellation.
+ * @returns {Promise<ExtractionResult<"55">>} Resolves with validated keys, metadata, warnings, and any structured failure.
+ * @since 0.1.0
+ *
+ * @example
+ * const result = await extractNFeAccessKeys("./danfe.pdf", {
+ *   performance: "balanced",
+ *   stopAfterFirst: true,
+ * });
+ */
 export function extractNFeAccessKeys(input: DocumentInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<"55">> {
   const startedAt = startTimer();
   return extractAccessKeysForModel(input, "55", optionsInput, startedAt);
 }
 
+/**
+ * Extracts and validates NFC-e model 65 access keys from a supported document input.
+ *
+ * @param {DocumentInput} input - Supplies a local path, HTTP(S) URL, or in-memory document bytes.
+ * @param {ExtractOptions} [optionsInput={}] - Configures recognition depth, resource limits, and cancellation.
+ * @returns {Promise<ExtractionResult<"65">>} Resolves with validated keys, metadata, warnings, and any structured failure.
+ * @since 0.1.0
+ *
+ * @example
+ * const result = await extractNFCeAccessKeys("./cupom.jpg", {
+ *   ocr: "fallback",
+ *   performance: "accurate",
+ * });
+ */
 export function extractNFCeAccessKeys(input: DocumentInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<"65">> {
   const startedAt = startTimer();
   return extractAccessKeysForModel(input, "65", optionsInput, startedAt);

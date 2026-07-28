@@ -11,6 +11,13 @@ function normalizedText(value: string): string {
   return value.normalize("NFKC").replace(/\u00a0/g, " ").toUpperCase();
 }
 
+/**
+ * Checks whether a character offset appears near an access-key label.
+ *
+ * @param {string} text - Supplies normalized document text to inspect.
+ * @param {number} start - Supplies the zero-based start offset of the candidate key.
+ * @returns {boolean} Returns `true` when the preceding context contains a recognized label.
+ */
 export function isNearAccessKeyLabel(text: string, start: number): boolean {
   const context = text.slice(Math.max(0, start - 120), start + 12);
   return LABEL_PATTERN.test(context);
@@ -25,6 +32,14 @@ function addIfValid(output: CandidateEvidence[], seen: Set<string>, accessKey: s
   output.push({ accessKey, page, source, pass, nearLabel });
 }
 
+/**
+ * Finds valid model-specific access keys in native or reconstructed document text.
+ *
+ * @param {string} text - Supplies document text that may contain contiguous or separated keys.
+ * @param {number} page - Identifies the 1-based source page for emitted evidence.
+ * @param {AccessKeyModel} expectedModel - Selects the fiscal model accepted in the output.
+ * @returns {Array<CandidateEvidence>} Returns unique validated evidence found in the text.
+ */
 export function findCandidatesInText(text: string, page: number, expectedModel: AccessKeyModel): CandidateEvidence[] {
   const normalized = normalizedText(text);
   const output: CandidateEvidence[] = [];
@@ -87,6 +102,16 @@ export function findCandidatesInText(text: string, page: number, expectedModel: 
   return output;
 }
 
+/**
+ * Finds valid model-specific access keys inside a decoded barcode payload.
+ *
+ * @param {string} value - Supplies the decoded barcode payload to inspect.
+ * @param {number} page - Identifies the 1-based source page for emitted evidence.
+ * @param {"code128"|"qr-code"} source - Identifies the barcode format that produced the payload.
+ * @param {number} pass - Identifies the 1-based render pass that produced the payload.
+ * @param {AccessKeyModel} expectedModel - Selects the fiscal model accepted in the output.
+ * @returns {Array<CandidateEvidence>} Returns unique validated evidence found in the payload.
+ */
 export function findCandidatesInDecodedValue(value: string, page: number, source: Extract<"code128" | "qr-code", ExtractionSource>, pass: number, expectedModel: AccessKeyModel): CandidateEvidence[] {
   let decoded = normalizedText(value);
   try {

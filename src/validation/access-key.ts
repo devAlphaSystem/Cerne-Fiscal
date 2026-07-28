@@ -13,6 +13,13 @@ const ACCESS_KEY_DOCUMENT_TYPES = {
 
 const SUPPORTED_MODELS = Object.keys(ACCESS_KEY_DOCUMENT_TYPES);
 
+/**
+ * Enumerates the stable issue codes produced by access-key validation.
+ *
+ * @enum {string}
+ * @readonly
+ * @since 0.1.0
+ */
 export const ACCESS_KEY_ISSUE_CODES = {
   INVALID_FORMAT: "INVALID_FORMAT",
   INVALID_CHECK_DIGIT: "INVALID_CHECK_DIGIT",
@@ -23,44 +30,151 @@ export const ACCESS_KEY_ISSUE_CODES = {
   INVALID_INVOICE_NUMBER: "INVALID_INVOICE_NUMBER",
 } as const;
 
+/**
+ * Identifies a machine-readable issue produced by access-key validation.
+ *
+ * @since 0.1.0
+ */
 export type AccessKeyIssueCode = (typeof ACCESS_KEY_ISSUE_CODES)[keyof typeof ACCESS_KEY_ISSUE_CODES];
 
+/**
+ * Identifies whether an access key uses a numeric or alphanumeric issuer segment.
+ *
+ * @since 0.1.0
+ */
 export type AccessKeyFormat = "numeric" | "alphanumeric";
 
+/**
+ * Identifies a supported two-digit fiscal document model.
+ *
+ * @since 0.1.0
+ */
 export type AccessKeyModel = keyof typeof ACCESS_KEY_DOCUMENT_TYPES;
 
+/**
+ * Identifies a supported fiscal document type.
+ *
+ * @since 0.1.0
+ */
 export type AccessKeyDocumentType = (typeof ACCESS_KEY_DOCUMENT_TYPES)[AccessKeyModel];
 
+/**
+ * Resolves the fiscal document type associated with a supported model.
+ *
+ * @template {AccessKeyModel} TModel - Identifies the model whose document type is resolved.
+ * @since 0.1.0
+ */
 export type AccessKeyDocumentTypeForModel<TModel extends AccessKeyModel> = (typeof ACCESS_KEY_DOCUMENT_TYPES)[TModel];
 
+/**
+ * Describes one structural, semantic, or checksum problem found in an access key.
+ *
+ * @since 0.1.0
+ */
 export interface AccessKeyIssue {
+  /**
+   * Identifies the validation rule that failed.
+   */
   code: AccessKeyIssueCode;
+  /**
+   * Explains the invalid field or relationship in human-readable form.
+   */
   message: string;
 }
 
+/**
+ * Represents the fields parsed from a structurally supported 44-character access key.
+ *
+ * @since 0.1.0
+ */
 export interface AccessKeyComponents {
+  /**
+   * Contains the normalized uppercase access key.
+   */
   accessKey: string;
+  /**
+   * Identifies the numeric or alphanumeric access-key format.
+   */
   format: AccessKeyFormat;
+  /**
+   * Contains the two-digit issuing-state code field, including unsupported values.
+   */
   stateCode: string;
+  /**
+   * Contains the four-digit issue year and month in `YYMM` form.
+   */
   yearMonth: string;
+  /**
+   * Contains the two-digit issue year.
+   */
   year: string;
+  /**
+   * Contains the two-digit issue month.
+   */
   month: string;
+  /**
+   * Contains the 14-character issuer-identifier field interpreted as a CNPJ or zero-padded CPF.
+   */
   issuerId: string;
+  /**
+   * Contains the raw two-digit fiscal model, including unsupported values.
+   */
   model: string;
+  /**
+   * Identifies the supported document type, or `null` for an unknown model.
+   */
   documentType: AccessKeyDocumentType | null;
+  /**
+   * Contains the three-digit document series.
+   */
   series: string;
+  /**
+   * Contains the nine-digit invoice number.
+   */
   invoiceNumber: string;
+  /**
+   * Contains the one-digit emission type.
+   */
   emissionType: string;
+  /**
+   * Contains the eight-digit numeric code assigned by the issuer.
+   */
   numericCode: string;
+  /**
+   * Contains the final modulo-11 check digit.
+   */
   checkDigit: number;
 }
 
+/**
+ * Reports validation state, parsed components, and every detected access-key issue.
+ *
+ * @since 0.1.0
+ */
 export interface AccessKeyValidation {
+  /**
+   * Indicates whether the access key passed every validation rule.
+   */
   isValid: boolean;
+  /**
+   * Contains the uppercase input used during validation.
+   */
   normalizedValue: string;
+  /**
+   * Identifies the detected format, or `null` when the input is structurally invalid.
+   */
   format: AccessKeyFormat | null;
+  /**
+   * Provides parsed fields, or `null` when the input format is unsupported.
+   */
   components: AccessKeyComponents | null;
+  /**
+   * Provides the calculated check digit, or `null` when it cannot be calculated.
+   */
   expectedCheckDigit: number | null;
+  /**
+   * Lists every validation issue found in deterministic rule order.
+   */
   issues: AccessKeyIssue[];
 }
 
@@ -147,6 +261,13 @@ function validateZeroPaddedCpf(value: string): boolean {
   return cpf.slice(9) === `${firstCheckDigit}${secondCheckDigit}`;
 }
 
+/**
+ * Validates a 14-character issuer identifier as a CNPJ or zero-padded CPF.
+ *
+ * @param {string} value - Supplies the issuer identifier to validate.
+ * @returns {boolean} Returns `true` when the identifier has a valid supported checksum.
+ * @since 0.1.0
+ */
 export function validateIssuerIdentifier(value: string): boolean {
   const normalizedValue = normalizeAccessKey(value);
 
@@ -157,6 +278,17 @@ export function validateIssuerIdentifier(value: string): boolean {
   return validateCnpj(normalizedValue) || validateZeroPaddedCpf(normalizedValue);
 }
 
+/**
+ * Calculates the modulo-11 check digit for a supported 43-character access-key body.
+ *
+ * @param {string} body - Supplies the access-key body without its final check digit.
+ * @returns {number} Returns the calculated check digit from 0 through 9.
+ * @throws {TypeError} Throws when the body does not match a supported 43-character format.
+ * @since 0.1.0
+ *
+ * @example
+ * const digit = calculateAccessKeyCheckDigit("3526071234567800019555001000000001112345678");
+ */
 export function calculateAccessKeyCheckDigit(body: string): number {
   const normalizedBody = normalizeAccessKey(body);
 
@@ -167,6 +299,18 @@ export function calculateAccessKeyCheckDigit(body: string): number {
   return calculateAsciiModulo11Digit(normalizedBody);
 }
 
+/**
+ * Parses the fixed-position fields of a structurally supported access key.
+ *
+ * @param {string} value - Supplies the complete 44-character access key to parse.
+ * @returns {AccessKeyComponents} Returns normalized fields without asserting their semantic validity.
+ * @throws {TypeError} Throws when the value does not match a supported 44-character format.
+ * @since 0.1.0
+ *
+ * @example
+ * const components = parseAccessKey("35260712345678000195550010000000011123456784");
+ * console.log(components.model);
+ */
 export function parseAccessKey(value: string): AccessKeyComponents {
   const normalizedValue = normalizeAccessKey(value);
   const format = getAccessKeyFormat(normalizedValue);
@@ -196,6 +340,17 @@ export function parseAccessKey(value: string): AccessKeyComponents {
   };
 }
 
+/**
+ * Validates the format, fiscal fields, issuer identifier, and check digit of an access key.
+ *
+ * @param {string} value - Supplies the complete access key to validate.
+ * @returns {AccessKeyValidation} Returns parsed fields and all detected issues without throwing for invalid input.
+ * @since 0.1.0
+ *
+ * @example
+ * const validation = validateAccessKey("35260712345678000195550010000000011123456784");
+ * console.log(validation.isValid);
+ */
 export function validateAccessKey(value: string): AccessKeyValidation {
   const normalizedValue = normalizeAccessKey(value);
   const format = getAccessKeyFormat(normalizedValue);
@@ -273,6 +428,13 @@ export function validateAccessKey(value: string): AccessKeyValidation {
   };
 }
 
+/**
+ * Checks whether an access key is valid and belongs to the expected fiscal model.
+ *
+ * @param {string} value - Supplies the complete access key to validate.
+ * @param {AccessKeyModel} expectedModel - Selects the fiscal model the key must contain.
+ * @returns {boolean} Returns `true` when the key is valid and its model matches the expectation.
+ */
 export function isValidAccessKeyForModel(value: string, expectedModel: AccessKeyModel): boolean {
   const validation = validateAccessKey(value);
   return validation.isValid && validation.components?.model === expectedModel;

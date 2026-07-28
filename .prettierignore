@@ -1,0 +1,19 @@
+# Dependencies
+dist
+node_modules
+
+# Runtime and environment
+.env*
+data/
+dados/
+
+# Demo app with its own package.json
+live/
+
+# Minified files
+*-min.js
+*-min.css
+*_min.js
+*_min.css
+*.min.js
+*.min.css

@@ -1,128 +1,142 @@
-# Instalação
+# Instalação e desenvolvimento
+
+Este guia separa o consumo do pacote publicado do trabalho no código-fonte. O Cerne Fiscal é uma biblioteca e uma CLI; não existe serviço, porta ou banco de dados para configurar.
 
 ## Requisitos
 
-| Item             | Exigência                                                        |
-| ---------------- | ---------------------------------------------------------------- |
-| Node.js          | 20 ou superior (CI valida em 20, 22 e 24)                        |
-| Sistema          | Windows, Linux ou macOS com binário `@napi-rs/canvas` disponível |
-| GPU              | Não é usada                                                      |
-| Tesseract        | Não precisa estar instalado no sistema                           |
-| Credenciais      | Nenhuma chave de API é exigida pelo pacote                       |
-| Rede em execução | Usada apenas se a entrada for uma URL HTTP/HTTPS                 |
+- Node.js 20 ou superior, conforme `engines.node` em `package.json`;
+- um gerenciador compatível com o `package-lock.json` para desenvolvimento local;
+- plataforma suportada pelas dependências nativas de `@napi-rs/canvas`;
+- CPU e memória compatíveis com o tamanho, número de páginas e perfil usados.
 
-Os dados de idioma do OCR (`@tesseract.js-data/eng`) são instalados junto com o
-pacote e carregados explicitamente do disco, evitando o uso padrão da CDN do
-Tesseract. Não há download de modelo em tempo de execução.
+Não há variáveis de ambiente obrigatórias, arquivo `.env` de exemplo, banco de dados ou serviço externo obrigatório. O OCR usa o pacote local `@tesseract.js-data/eng`; uma chamada só acessa a rede quando a própria entrada é uma URL HTTP(S).
 
-## Instalação como dependência
+## Como dependência de outro projeto
 
 ```bash
 npm install cerne-fiscal
 ```
 
-O pacote publica ESM e CommonJS com declarações de tipos para ambos:
+Uso ESM:
 
 ```ts
-import { extractNFeAccessKeys } from "cerne-fiscal";
+import { extractNFeAccessKeys, validateAccessKey } from "cerne-fiscal";
 ```
+
+Uso CommonJS:
 
 ```js
-const { extractNFeAccessKeys } = require("cerne-fiscal");
+const { extractNFeAccessKeys, validateAccessKey } = require("cerne-fiscal");
 ```
 
-O `package.json` declara `"sideEffects": false`, então bundlers podem eliminar
-código não utilizado. `engines.node` exige `>=20`.
+O mapa de exports aponta para:
 
-## Instalação da CLI
+| Consumidor       | JavaScript       | Tipos              |
+| ---------------- | ---------------- | ------------------ |
+| ESM/import       | `dist/index.js`  | `dist/index.d.ts`  |
+| CommonJS/require | `dist/index.cjs` | `dist/index.d.cts` |
+| CLI              | `dist/cli.js`    | não aplicável      |
 
-O pacote registra o binário `cerne-fiscal`. Depois de instalar como dependência
-do projeto:
+O pacote declara `sideEffects: false`, possibilitando tree-shaking por ferramentas que respeitem esse campo.
+
+## A partir do código-fonte
+
+Depois de obter o repositório, o fluxo previsto pelos scripts é:
 
 ```bash
-npx cerne-fiscal ./danfe.pdf --document-type nfe --pretty
+npm ci
+npm run check
 ```
 
-Para uso global:
+`npm run check` executa, em sequência:
 
-```bash
-npm install --global cerne-fiscal
-```
+1. `tsc --noEmit`;
+2. ESLint;
+3. verificação do Prettier;
+4. build com `tsup`.
 
-`--document-type` é obrigatório. Detalhes em [CLI.md](CLI.md).
+O build gera ESM, CommonJS, declarações TypeScript e source maps da biblioteca em `dist/`, além da CLI ESM. O alvo é Node.js 20 e os bundles não fazem code splitting.
 
-## Dependências instaladas
+Os comandos acima são instruções para execução manual. Consulte também os scripts individuais:
 
-| Pacote                   | Papel                                                     |
-| ------------------------ | --------------------------------------------------------- |
-| `pdfjs-dist`             | Abertura de PDF, extração de texto nativo e renderização  |
-| `@napi-rs/canvas`        | Superfície de rasterização nativa usada nas renderizações |
-| `@zxing/library`         | Leitura de Code 128 e QR Code                             |
-| `tesseract.js`           | Motor de OCR executado localmente em worker thread        |
-| `@tesseract.js-data/eng` | Dados de idioma usados pelo OCR                           |
+| Script                   | Finalidade                             |
+| ------------------------ | -------------------------------------- |
+| `npm run build`          | gera os artefatos em `dist/`           |
+| `npm run typecheck`      | valida os tipos sem emitir arquivos    |
+| `npm run lint`           | executa ESLint no projeto              |
+| `npm run format:check`   | confere a formatação sem reescrever    |
+| `npm run format`         | aplica Prettier                        |
+| `npm run security:audit` | executa `npm audit --audit-level=low`  |
+| `npm run bench:fixtures` | regenera as fixtures sintéticas        |
+| `npm run bench`          | executa o benchmark com GC exposto     |
+| `npm run check`          | agrega tipos, lint, formatação e build |
 
-`@napi-rs/canvas` distribui binários pré-compilados por plataforma. Em sistemas
-sem binário publicado a instalação falha; não existe fallback puro em JavaScript
-dentro deste pacote.
+Não há script `test` no `package.json`. A verificação comportamental disponível no repositório é o benchmark determinístico descrito em `bench/README.md`.
 
-## Desenvolvimento local
+## Dependências de runtime
 
-```bash
-git clone <repositorio>
-cd "Cerne Fiscal"
-npm install
-npm run build
-```
+| Dependência              | Papel no projeto                                 |
+| ------------------------ | ------------------------------------------------ |
+| `pdfjs-dist`             | parsing, texto nativo e renderização de PDF      |
+| `@napi-rs/canvas`        | canvas, decodificação e transformação de imagens |
+| `@zxing/library`         | leitura de Code 128 e QR Code                    |
+| `tesseract.js`           | worker de OCR                                    |
+| `@tesseract.js-data/eng` | dados de idioma embarcados para o OCR            |
 
-O `postinstall` executa `patch-package`, que aplica `patches/prettier+3.9.4.patch`.
-Instalações com `--ignore-scripts` pulam essa etapa e o `npm run format:check`
-pode divergir do resultado esperado.
+Os runtimes pesados são importados sob demanda: PDF, canvas, leitor de código de barras e OCR só são carregados quando o caminho da extração precisa deles. Isso reduz trabalho inicial, mas a primeira chamada que alcança cada estágio pode ter latência adicional de inicialização.
 
-### Scripts disponíveis
+## TypeScript e estilo
 
-| Script                   | O que faz                                                      |
-| ------------------------ | -------------------------------------------------------------- |
-| `npm run build`          | Gera ESM, CJS, `.d.ts`, sourcemaps e a CLI em `dist/` via tsup |
-| `npm run typecheck`      | `tsc --noEmit`                                                 |
-| `npm run lint`           | ESLint com `typescript-eslint`                                 |
-| `npm run format`         | Aplica o Prettier                                              |
-| `npm run format:check`   | Verifica a formatação sem escrever                             |
-| `npm test`               | `node --test`                                                  |
-| `npm run bench:fixtures` | Regenera as fixtures sintéticas em `bench/fixtures/`           |
-| `npm run bench`          | Executa o benchmark de tempo e de estabilidade de resultado    |
-| `npm run security:audit` | `npm audit --audit-level=low`                                  |
-| `npm run check`          | typecheck + lint + format:check + build + test, na ordem       |
+O projeto usa TypeScript estrito, `moduleResolution: "Bundler"`, ES2022, imports verbatim, checagem de variáveis não usadas e `noUncheckedIndexedAccess`. O código-fonte está em `src/` e não deve importar artefatos de `dist/`.
 
-### Verificação de uma alteração
+O `prepare` executa `patch-package`. Existe um patch versionado para o Prettier 3.9.4 que altera decisões de quebra de linha e indentação de templates; por isso a versão do Prettier está fixada exatamente em `3.9.4`. Antes de atualizar o formatador, o patch deve ser revisto e migrado, não descartado silenciosamente.
 
-O repositório não versiona arquivos de teste: `npm test` hoje executa zero
-testes e termina com sucesso de forma vacuosa. A garantia real de que uma
-mudança em `src/` não alterou o resultado da extração vem do benchmark, que
-compara todo o JSON de saída exceto `durationMs`:
+## CI
 
-```bash
-npm run build && node bench/run.mjs --repeats 3 --save antes
-```
+O workflow `.github/workflows/ci.yml` possui dois jobs:
 
-Depois de alterar `src/`:
+- `verify`: instala com `npm ci` e executa typecheck, lint, verificação de formato e build em Node.js 20, 22 e 24;
+- `security`: instala com `npm ci` e executa a auditoria de dependências em Node.js 22.
 
-```bash
-npm run build && node bench/run.mjs --repeats 3 --compare antes
-```
+O benchmark não é executado pelo CI atual.
 
-Qualquer divergência em `results`, `precisionScore`, `warnings` ou `metadata` é
-listada e o processo sai com código `1`. Consulte [`bench/README.md`](../bench/README.md).
+## Conteúdo publicado
 
-### Integração contínua
+O campo `files` do `package.json` inclui somente:
 
-`.github/workflows/ci.yml` roda `typecheck`, `lint`, `format:check`, `build` e
-`test` na matriz Node 20/22/24, e `security:audit` em um job separado.
+- `dist/`;
+- `README.md`;
+- `LICENSE`.
 
-## Desinstalação
+Os guias em `docs/` e os arquivos de benchmark permanecem no repositório, mas não são incluídos no pacote gerado pela configuração atual. O `prepack` chama `npm run check`, portanto empacotamento ou publicação dependem de todas as verificações estáticas e do build.
 
-```bash
-npm uninstall cerne-fiscal
-```
+## Problemas de instalação
 
-O pacote não grava arquivos fora de `node_modules`, não cria diretórios de cache
-próprios e não persiste documentos em disco.
+### Versão do Node.js rejeitada
+
+Confirme `node --version`. O pacote declara Node.js 20 como versão mínima e usa APIs disponíveis nesse runtime, inclusive `fetch`, `AbortSignal` e módulos ESM.
+
+### Falha ao carregar canvas
+
+`@napi-rs/canvas` depende de um binário específico da plataforma. Confirme que a plataforma/arquitetura está contemplada pelo pacote instalado e que a instalação não omitiu dependências opcionais necessárias. A extração de imagens e a renderização de PDF não funcionam sem esse runtime.
+
+### OCR não inicializa
+
+Confirme que `tesseract.js` e `@tesseract.js-data/eng` foram instalados. O projeto configura o worker com dados `eng` locais, `OEM.LSTM_ONLY`, segmentação `SPARSE_TEXT` e uma whitelist alfanumérica.
+
+### `dist/` ausente ao usar o repositório
+
+Os entrypoints do pacote apontam para `dist/`; execute o build antes de importar o diretório como pacote ou rodar o benchmark. O código-fonte TypeScript não é o entrypoint publicado.
+
+### Patch do Prettier não aplica
+
+Verifique se a versão instalada continua exatamente `3.9.4`. Alterações nessa dependência exigem migração consciente de `patches/prettier+3.9.4.patch`.
+
+## Referências no código
+
+- requisitos, exports, scripts e dependências: `package.json`;
+- configuração TypeScript: `tsconfig.json`;
+- lint: `eslint.config.js`;
+- estilo: `.prettierrc.json` e `patches/prettier+3.9.4.patch`;
+- CI: `.github/workflows/ci.yml`;
+- benchmark: `bench/README.md`, `bench/fixtures.mjs` e `bench/run.mjs`.

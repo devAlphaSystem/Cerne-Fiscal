@@ -165,12 +165,31 @@ function normalizeRequestHeaders(requestHeaders: ExtractOptions["requestHeaders"
   return Object.freeze(normalized);
 }
 
+function validateSignal(signal: ExtractOptions["signal"]): void {
+  if (signal === undefined) {
+    return;
+  }
+  if (typeof signal !== "object" || signal === null || typeof signal.aborted !== "boolean" || typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function") {
+    throw new InvalidOptionsError("signal must be an AbortSignal.");
+  }
+}
+
+function booleanOrDefault(name: string, value: boolean | undefined, fallback: boolean): boolean {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== "boolean") {
+    throw new InvalidOptionsError(`${name} must be a boolean.`);
+  }
+  return value;
+}
+
 /**
  * Validates extraction options and applies defaults from the selected performance profile.
  *
  * @param {ExtractOptions} [options={}] - Supplies caller overrides for extraction behavior and limits.
  * @returns {ResolvedOptions} Returns normalized settings ready for the extraction pipeline.
- * @throws {InvalidOptionsError} Throws when an option is outside its supported range or headers are invalid.
+ * @throws {InvalidOptionsError} Throws when an option is outside its supported range, headers are invalid, the cancellation signal is not an AbortSignal, or a flag is not a boolean.
  *
  * @example
  * const options = resolveOptions({ performance: "fast", passes: 1, timeoutMs: 15_000 });
@@ -188,6 +207,7 @@ export function resolveOptions(options: ExtractOptions = {}): ResolvedOptions {
   }
 
   const requestHeaders = normalizeRequestHeaders(options.requestHeaders);
+  validateSignal(options.signal);
 
   return {
     performance,
@@ -198,7 +218,7 @@ export function resolveOptions(options: ExtractOptions = {}): ResolvedOptions {
     maxPixelsPerPage: integerInRange("maxPixelsPerPage", options.maxPixelsPerPage, profile.maxPixelsPerPage, 250_000, 100_000_000),
     maxSourceImagePixels: integerInRange("maxSourceImagePixels", options.maxSourceImagePixels, profile.maxSourceImagePixels, 250_000, 200_000_000),
     timeoutMs: integerInRange("timeoutMs", options.timeoutMs, profile.timeoutMs, 0, 3_600_000),
-    stopAfterFirst: options.stopAfterFirst ?? false,
+    stopAfterFirst: booleanOrDefault("stopAfterFirst", options.stopAfterFirst, false),
     ...(requestHeaders === undefined ? {} : { requestHeaders }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   };

@@ -1,232 +1,23 @@
-# Exemplos
+# Exemplos de integração
 
-Receitas prontas para os usos mais comuns. A referência dos tipos está em
-[API.md](API.md).
+Os exemplos usam apenas a API pública de `cerne-fiscal`. Ajuste caminhos, URLs e políticas de recurso ao ambiente da aplicação.
 
-## Sumário
-
-- [Extração básica](#extração-básica)
-- [Escolhendo o perfil](#escolhendo-o-perfil)
-- [Entradas em memória](#entradas-em-memória)
-- [URLs e autenticação](#urls-e-autenticação)
-- [Processando vários documentos](#processando-vários-documentos)
-- [Cancelamento e prazo](#cancelamento-e-prazo)
-- [Lendo o resultado com segurança](#lendo-o-resultado-com-segurança)
-- [Tratamento de erros](#tratamento-de-erros)
-- [Usando os componentes da chave](#usando-os-componentes-da-chave)
-- [Validação sem documento](#validação-sem-documento)
-- [Integrações](#integrações)
-
----
-
-## Extração básica
+## NF-e a partir de arquivo local
 
 ```ts
-import { extractNFCeAccessKeys, extractNFeAccessKeys } from "cerne-fiscal";
-
-const nfe = await extractNFeAccessKeys("./danfe.pdf");
-
-if (nfe.success) {
-  console.log(nfe.bestMatch.accessKey); // 44 caracteres
-  console.log(nfe.bestMatch.documentType); // "NFe"
-  console.log(nfe.bestMatch.model); // "55"
-}
-
-const nfce = await extractNFCeAccessKeys("./cupom.jpg");
-```
-
-Em CommonJS:
-
-```js
-const { extractNFeAccessKeys } = require("cerne-fiscal");
-
-extractNFeAccessKeys("./danfe.pdf").then((result) => {
-  console.log(JSON.stringify(result, null, 2));
-});
-```
-
-Cada função procura **exclusivamente** o seu modelo. Uma DANFE de NF-e passada
-para `extractNFCeAccessKeys` termina em `not_found`, não em erro.
-
-## Escolhendo o perfil
-
-```ts
-// DANFE gerada por sistema, com texto nativo: o mais barato resolve.
-const rapido = await extractNFeAccessKeys("./danfe-sistema.pdf", {
-  performance: "fast",
-});
-
-// Foto de cupom: vale gastar em rotações e OCR.
-const foto = await extractNFCeAccessKeys("./foto-cupom.jpg", {
-  performance: "accurate",
-  passes: 5,
-});
-
-// Digitalização sem camada de texto: force o OCR mesmo no perfil rápido.
-const digitalizado = await extractNFeAccessKeys("./scan.pdf", {
-  performance: "fast",
-  ocr: "always",
-});
-```
-
-Quando quiser **verificação cruzada** — que o código de barras confirme o que o
-texto já disse —, use `accurate`: ele executa as passagens de código mesmo com a
-chave já encontrada em texto. `fast` e `balanced` param antes.
-
-```ts
-const cruzado = await extractNFeAccessKeys("./danfe.pdf", { performance: "accurate" });
-const confirmada = cruzado.bestMatch?.sources.length > 1;
-```
-
-## Entradas em memória
-
-```ts
-import { readFile } from "node:fs/promises";
 import { extractNFeAccessKeys } from "cerne-fiscal";
 
-const bytes = await readFile("./danfe.pdf");
-const result = await extractNFeAccessKeys(bytes); // Buffer é Uint8Array
-```
-
-Vindo de um upload HTTP, sem tocar no disco:
-
-```ts
-app.post("/notas", async (request, reply) => {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request.raw) {
-    chunks.push(chunk);
-  }
-
-  const result = await extractNFeAccessKeys(Buffer.concat(chunks), {
-    performance: "balanced",
-    maxFileSizeBytes: 10 * 1024 * 1024,
-    timeoutMs: 60_000,
-  });
-
-  return reply.code(result.success ? 200 : 422).send(result);
-});
-```
-
-O formato é detectado pelos bytes, então não é preciso confiar no nome do
-arquivo nem no `Content-Type` enviado pelo cliente.
-
-## URLs e autenticação
-
-```ts
-// URL pública
-const publico = await extractNFCeAccessKeys("https://documents.example.com/public/cupom.png");
-
-// URL autenticada — requestHeaders existe apenas na API
-const privado = await extractNFeAccessKeys("https://documents.example.com/private/danfe.pdf", {
-  requestHeaders: {
-    Authorization: "Bearer <token>",
-    "X-Tenant-Id": "acme",
-  },
-});
-```
-
-Os cabeçalhos sobrevivem a redirecionamentos de mesma origem e são descartados
-quando a origem muda.
-
-Quando a URL vem de terceiros, prefira baixar com um cliente sob seu controle e
-entregar os bytes — o extrator não faz filtragem de SSRF:
-
-```ts
-const response = await fetch(urlValidadaPelaSuaPolitica, { redirect: "error" });
-const bytes = new Uint8Array(await response.arrayBuffer());
-const result = await extractNFeAccessKeys(bytes);
-```
-
-## Processando vários documentos
-
-O pacote não expõe API de lote — cada chamada é um documento. Para paralelizar,
-controle a concorrência no seu código:
-
-```ts
-async function extrairComLimite(caminhos: string[], limite = 4) {
-  const resultados: ExtractionResult<"55">[] = new Array(caminhos.length);
-  let proximo = 0;
-
-  async function trabalhador() {
-    while (proximo < caminhos.length) {
-      const indice = proximo++;
-      resultados[indice] = await extractNFeAccessKeys(caminhos[indice]);
-    }
-  }
-
-  await Promise.all(Array.from({ length: Math.min(limite, caminhos.length) }, trabalhador));
-  return resultados;
-}
-```
-
-Cada extração já é limitada internamente por prazo e recursos, mas o OCR roda em
-worker thread: concorrência alta demais degrada o tempo total em vez de melhorá-lo.
-
-Quando o modelo do documento é desconhecido:
-
-```ts
-async function extrairQualquerModelo(entrada: DocumentInput) {
-  const nfe = await extractNFeAccessKeys(entrada, { stopAfterFirst: true });
-  if (nfe.success) return nfe;
-
-  return extractNFCeAccessKeys(entrada, { stopAfterFirst: true });
-}
-```
-
-## Cancelamento e prazo
-
-```ts
-const controller = new AbortController();
-setTimeout(() => controller.abort(), 30_000);
-
-const result = await extractNFeAccessKeys("./documento-grande.pdf", {
-  signal: controller.signal,
-});
-
-if (result.error?.code === "ABORTED") {
-  console.warn("cancelado pelo chamador");
-}
-```
-
-Prazo interno, sem `AbortController`:
-
-```ts
-const result = await extractNFeAccessKeys("./documento.pdf", { timeoutMs: 15_000 });
-// result.error?.code === "TIMEOUT" quando estoura
-```
-
-Ligando ao ciclo de vida de uma requisição HTTP:
-
-```ts
-app.post("/extrair", async (request, reply) => {
-  const controller = new AbortController();
-  request.raw.on("close", () => controller.abort());
-
-  return extractNFeAccessKeys(request.body.url, { signal: controller.signal });
-});
-```
-
-`timeoutMs` cobre download e extração em conjunto; `signal` cancela qualquer uma
-das fases.
-
-## Lendo o resultado com segurança
-
-`status` e `success` respondem perguntas diferentes:
-
-```ts
-const result = await extractNFeAccessKeys("./danfe.pdf");
+const result = await extractNFeAccessKeys("./documentos/danfe.pdf");
 
 switch (result.status) {
   case "success":
-    // Varredura completa, ao menos uma chave validada.
+    console.log(result.bestMatch?.accessKey);
     break;
   case "not_found":
-    // Varredura completa, nada encontrado. Não é erro.
+    console.log("Nenhuma chave de NF-e válida foi encontrada.");
     break;
   case "partial":
-    // Encontrou algo, mas a varredura foi truncada ou falhou no meio.
-    // result.success pode ser true aqui.
-    console.warn(result.warnings);
+    console.log("Processamento parcial", result.results, result.error);
     break;
   case "error":
     console.error(result.error);
@@ -234,253 +25,264 @@ switch (result.status) {
 }
 ```
 
-O `precisionScore` do topo é o **menor** entre os resultados. Para avaliar o
-melhor resultado isoladamente, use o dele:
+Uma chamada de NF-e descarta chaves válidas do modelo 65. Use a função correspondente ao documento esperado.
+
+## NFC-e a partir de imagem
 
 ```ts
-const confiavel = result.bestMatch !== null && result.bestMatch.precisionScore >= 0.9;
-```
+import { extractNFCeAccessKeys } from "cerne-fiscal";
 
-Exigindo confirmação por fontes independentes:
+const result = await extractNFCeAccessKeys("./imagens/cupom.jpg", {
+  performance: "accurate",
+  ocr: "fallback",
+  stopAfterFirst: true,
+});
 
-```ts
-const corroborada = result.results.filter((chave) => chave.sources.length > 1);
-```
-
-Distinguindo a origem da evidência:
-
-```ts
-const porCodigo = result.results.filter((chave) => chave.sources.some((fonte) => fonte === "code128" || fonte === "qr-code"));
-
-const somenteOcr = result.results.filter((chave) => chave.sources.length === 1 && chave.sources[0] === "ocr");
-```
-
-Detectando truncamento por limite de páginas:
-
-```ts
-if (!result.metadata.complete) {
-  console.warn("varredura incompleta:", result.warnings);
+if (result.success) {
+  const match = result.bestMatch;
+  console.log({
+    accessKey: match?.accessKey,
+    page: match?.pages[0],
+    sources: match?.sources,
+    confidence: match?.precisionScore,
+  });
 }
 ```
 
-Documentos com mais de uma nota:
+JPEG e PNG são tratados como documentos de uma página. Orientação EXIF de JPEG é considerada na renderização.
+
+## Bytes em memória
+
+### `Buffer`
 
 ```ts
-if (result.results.length > 1) {
-  console.log(`${result.results.length} chaves distintas no documento`);
-  for (const chave of result.results) {
-    console.log(chave.accessKey, chave.pages, chave.precisionScore);
+import { readFile } from "node:fs/promises";
+import { extractNFeAccessKeys } from "cerne-fiscal";
+
+const bytes = await readFile("./nota.pdf");
+const result = await extractNFeAccessKeys(bytes, {
+  maxFileSizeBytes: 20 * 1024 * 1024,
+});
+```
+
+`Buffer` funciona por ser uma subclasse de `Uint8Array`. A biblioteca copia a entrada antes de processá-la, evitando depender de mutações posteriores do chamador.
+
+### `ArrayBuffer` e `Uint8Array`
+
+```ts
+import { extractNFeAccessKeys } from "cerne-fiscal";
+
+async function inspectUpload(upload: ArrayBuffer) {
+  return extractNFeAccessKeys(upload, {
+    maxFileSizeBytes: 10 * 1024 * 1024,
+    maxPages: 3,
+    timeoutMs: 30_000,
+  });
+}
+```
+
+O formato é inferido dos bytes, não do nome fornecido pelo upload.
+
+## URL pública
+
+```ts
+import { extractNFeAccessKeys } from "cerne-fiscal";
+
+const result = await extractNFeAccessKeys("https://documents.example/notas/123.pdf", {
+  timeoutMs: 60_000,
+  maxFileSizeBytes: 15 * 1024 * 1024,
+});
+```
+
+O download aceita somente HTTP(S), segue até cinco redirects, rejeita status não 2xx e interrompe o corpo assim que o limite configurado é excedido.
+
+## URL autenticada
+
+```ts
+import { extractNFeAccessKeys } from "cerne-fiscal";
+
+const result = await extractNFeAccessKeys("https://documents.example/private/nota.pdf", {
+  requestHeaders: {
+    authorization: `Bearer ${process.env.DOCUMENT_TOKEN ?? ""}`,
+  },
+});
+```
+
+Não inclua credenciais na URL. Cabeçalhos do chamador são removidos se um redirect mudar a origem. Mesmo assim, valide URLs não confiáveis antes da chamada e restrinja acesso de rede; a biblioteca não implementa allowlist de hosts ou bloqueio de endereços internos.
+
+## Cancelamento pelo chamador
+
+```ts
+import { extractNFeAccessKeys } from "cerne-fiscal";
+
+const controller = new AbortController();
+const extraction = extractNFeAccessKeys("https://documents.example/nota.pdf", {
+  signal: controller.signal,
+  timeoutMs: 0,
+});
+
+const timer = setTimeout(() => controller.abort(), 10_000);
+try {
+  const result = await extraction;
+  if (result.error?.code === "ABORTED") {
+    console.log("Extração cancelada pelo chamador.");
   }
+} finally {
+  clearTimeout(timer);
 }
 ```
 
-## Tratamento de erros
+O sinal é conectado diretamente ao download e verificado entre etapas de reconhecimento. Uma chamada nativa ou OCR já em execução pode só observar o cancelamento ao devolver o controle ao pipeline.
 
-A promise não é rejeitada por falha esperada — tudo chega em `result.error`:
+## Deadline interno
 
 ```ts
-const result = await extractNFeAccessKeys(entrada);
+const result = await extractNFeAccessKeys("./nota.pdf", {
+  performance: "balanced",
+  timeoutMs: 45_000,
+});
 
-if (result.error) {
-  switch (result.error.code) {
-    case "PASSWORD_REQUIRED":
-      return { motivo: "PDF protegido por senha" };
-    case "FILE_TOO_LARGE":
-    case "RESOURCE_LIMIT":
-      return { motivo: "documento acima dos limites configurados" };
-    case "TIMEOUT":
-    case "ABORTED":
-      return { motivo: "processamento interrompido", retentar: true };
-    case "UNSUPPORTED_FORMAT":
-      return { motivo: "envie PDF, JPEG ou PNG" };
-    case "DOWNLOAD_ERROR":
-      return { motivo: "não foi possível baixar a URL", retentar: true };
-    default:
-      return { motivo: result.error.message };
+if (result.error?.code === "TIMEOUT") {
+  console.error("A extração excedeu 45 segundos.");
+}
+```
+
+O timeout mede a chamada completa, inclusive carregamento, parsing e inicializações. O valor `0` desativa a deadline e deve ser usado com cautela para entradas não confiáveis.
+
+## Limitar recursos para upload não confiável
+
+```ts
+const result = await extractNFeAccessKeys(uploadBytes, {
+  performance: "fast",
+  ocr: "never",
+  maxPages: 2,
+  maxFileSizeBytes: 8 * 1024 * 1024,
+  maxPixelsPerPage: 4_000_000,
+  maxSourceImagePixels: 20_000_000,
+  timeoutMs: 20_000,
+  stopAfterFirst: true,
+});
+```
+
+Esse perfil reduz exposição a documentos custosos, mas pode diminuir recuperação em scans ruins. Limites de aplicação, concorrência e isolamento de processo continuam sendo responsabilidade do integrador.
+
+## Tratar resultado parcial
+
+```ts
+const result = await extractNFeAccessKeys("./lote.pdf", {
+  maxPages: 5,
+});
+
+if (result.status === "partial") {
+  if (result.success) {
+    console.log("Chaves encontradas antes do corte:", result.results);
   }
+  console.warn(result.warnings);
+  console.warn(result.error);
 }
 ```
 
-Nenhum campo do resultado reproduz caminho, URL, string de consulta, buffer ou
-valor de cabeçalho, então `result` pode ir para o log sem tratamento adicional.
+Um corte por `maxPages` gera warning e não necessariamente `error`. Uma falha depois de evidência pode preencher `error` e ainda manter `success: true`.
 
-## Usando os componentes da chave
-
-```ts
-const chave = result.bestMatch;
-if (chave === null) return;
-
-const { stateCode, year, month, issuerId, model, documentType, series, invoiceNumber, emissionType, numericCode, checkDigit } = chave.components;
-
-console.log(`UF ${stateCode}, emissão ${month}/20${year}`);
-console.log(`emitente ${issuerId}, nota ${invoiceNumber} série ${series}`);
-console.log(`${documentType} modelo ${model}, DV ${checkDigit}`);
-```
-
-Distinguindo CNPJ de CPF no identificador do emitente:
+## Percorrer todas as chaves
 
 ```ts
-const { issuerId } = chave.components;
+const result = await extractNFeAccessKeys("./lote.pdf", {
+  stopAfterFirst: false,
+  maxPages: 100,
+});
 
-if (issuerId.startsWith("000") && /^000\d{11}$/.test(issuerId)) {
-  console.log("emitente pessoa física, CPF", issuerId.slice(3));
-} else {
-  console.log("emitente pessoa jurídica, CNPJ", issuerId);
+for (const item of result.results) {
+  console.log({
+    key: item.accessKey,
+    pages: item.pages,
+    sources: item.sources,
+    occurrences: item.occurrences,
+    score: item.precisionScore,
+  });
 }
 ```
 
-Tratando o CNPJ alfanumérico:
+Os resultados vêm em confiança decrescente; empates usam a primeira página. `occurrences` conta evidências deduplicadas por página e fonte, não cada match bruto do parser.
 
-```ts
-if (chave.format === "alphanumeric") {
-  // As 12 primeiras posições do emitente podem conter letras.
-  // Nunca converta a chave para número: use sempre string.
-}
-```
-
-Conferindo contra um pedido já conhecido:
-
-```ts
-function confere(result: ExtractionResult<"55">, esperada: string) {
-  const encontrada = result.results.some((chave) => chave.accessKey === esperada.toUpperCase());
-  return { ok: encontrada, confianca: result.bestMatch?.precisionScore ?? 0 };
-}
-```
-
-A comparação precisa ser em maiúsculas: chaves são normalizadas assim.
-
-## Validação sem documento
-
-Os validadores são síncronos e não carregam PDF, canvas ou OCR:
+## Validar uma chave sem documento
 
 ```ts
 import { validateAccessKey } from "cerne-fiscal";
 
-const validacao = validateAccessKey("35260712345678000195550010000000011123456784");
+const validation = validateAccessKey("35260712345678000195550010000000011123456784");
 
-if (validacao.isValid) {
-  console.log(validacao.components.documentType); // "NFe"
-  console.log(validacao.format); // "numeric"
+if (validation.isValid) {
+  console.log(validation.components);
 } else {
-  for (const issue of validacao.issues) {
+  for (const issue of validation.issues) {
     console.error(issue.code, issue.message);
   }
 }
 ```
 
-`validateAccessKey` aceita 55 e 65 indistintamente. Para restringir a um modelo:
+`validateAccessKey` não lança para chave inválida. Ele não faz consulta externa.
 
-```ts
-function ehNFeValida(valor: string): boolean {
-  const validacao = validateAccessKey(valor);
-  return validacao.isValid && validacao.components?.model === "55";
-}
-```
-
-Validando o que o usuário digitou:
-
-```ts
-import { ACCESS_KEY_ISSUE_CODES, validateAccessKey } from "cerne-fiscal";
-
-const validacao = validateAccessKey(entradaDoFormulario.replace(/\s/g, ""));
-
-if (!validacao.isValid) {
-  const dvErrado = validacao.issues.some((issue) => issue.code === ACCESS_KEY_ISSUE_CODES.INVALID_CHECK_DIGIT);
-
-  return dvErrado ? `Confira os dígitos: o DV deveria ser ${validacao.expectedCheckDigit}.` : validacao.issues[0].message;
-}
-```
-
-Decompondo sem validar — útil para diagnóstico:
+## Analisar campos quando o formato já é confiável
 
 ```ts
 import { parseAccessKey } from "cerne-fiscal";
 
 try {
-  const componentes = parseAccessKey(valor);
-  console.log(componentes.model, componentes.documentType); // documentType pode ser null
-} catch {
-  console.error("formato de 44 caracteres não reconhecido");
+  const components = parseAccessKey("35260712345678000195550010000000011123456784");
+  console.log(components.model, components.invoiceNumber);
+} catch (error) {
+  console.error("Formato incompatível", error);
 }
 ```
 
-Validando um emitente isoladamente ou recalculando o DV:
+`parseAccessKey` pode retornar componentes semanticamente inválidos e lança para estrutura não suportada. Para dados externos, valide primeiro.
+
+## Calcular o dígito geral
 
 ```ts
-import { calculateAccessKeyCheckDigit, validateIssuerIdentifier } from "cerne-fiscal";
+import { calculateAccessKeyCheckDigit } from "cerne-fiscal";
 
-validateIssuerIdentifier("12345678000195"); // CNPJ
-validateIssuerIdentifier("00012345678901"); // CPF com zeros à esquerda
-
-const dv = calculateAccessKeyCheckDigit(chaveCompleta.slice(0, 43));
-console.log(dv === Number(chaveCompleta[43]));
+const body = "3526071234567800019555001000000001112345678";
+const digit = calculateAccessKeyCheckDigit(body);
+console.log(`${body}${digit}`);
 ```
 
-## Integrações
+O corpo precisa ter exatamente 43 caracteres no formato suportado.
 
-### Fila de processamento com retentativa seletiva
+## CommonJS
 
-```ts
-const RETENTAVEIS = new Set(["DOWNLOAD_ERROR", "TIMEOUT", "PROCESSING_ERROR"]);
+```js
+const { extractNFeAccessKeys } = require("cerne-fiscal");
 
-async function processar(job: { url: string; tentativas: number }) {
-  const result = await extractNFeAccessKeys(job.url, {
-    performance: job.tentativas === 0 ? "balanced" : "accurate",
-    passes: job.tentativas === 0 ? 2 : 5,
-    timeoutMs: 120_000,
-  });
-
-  if (result.success) {
-    return result;
-  }
-
-  if (result.error && RETENTAVEIS.has(result.error.code) && job.tentativas < 3) {
-    throw new Error(`retentar: ${result.error.code}`);
-  }
-
-  return result; // not_found e erros definitivos não voltam para a fila
+async function main() {
+  const result = await extractNFeAccessKeys("./nota.pdf");
+  console.log(result.bestMatch?.accessKey ?? null);
 }
+
+void main();
 ```
 
-### Escalonando o esforço
+## CLI
 
-```ts
-async function extrairComEscalada(entrada: DocumentInput) {
-  const barato = await extractNFeAccessKeys(entrada, { performance: "fast" });
-  if (barato.success) return barato;
-
-  return extractNFeAccessKeys(entrada, {
-    performance: "accurate",
-    passes: 5,
-    ocr: "always",
-  });
-}
+```bash
+cerne-fiscal ./nota.pdf --document-type nfe --pretty
+cerne-fiscal ./cupom.png --document-type nfce --ocr always --first
 ```
 
-### Conciliação com uma base própria
+Veja opções, JSON e códigos de saída em [CLI](CLI.md).
 
-```ts
-async function conciliar(caminho: string) {
-  const result = await extractNFeAccessKeys(caminho, { performance: "balanced" });
+## Padrão recomendado de integração
 
-  if (!result.success) {
-    return { situacao: result.status, chave: null };
-  }
+Em serviços que recebem documentos de terceiros:
 
-  const chave = result.bestMatch;
+1. autentique e autorize antes de aceitar o documento;
+2. limite tamanho no transporte e novamente em `maxFileSizeBytes`;
+3. prefira bytes já baixados quando a URL vem de usuário não confiável;
+4. use deadline, limite de páginas/pixels e controle de concorrência;
+5. trate `partial` de forma explícita;
+6. não registre `requestHeaders`, documento bruto ou resultado fiscal sem necessidade;
+7. valide o modelo adequado ao contexto;
+8. monitore `error.code`, duração, páginas renderizadas e páginas de OCR.
 
-  if (chave.precisionScore < 0.9 || chave.sources.length === 1) {
-    return { situacao: "revisao_manual", chave: chave.accessKey };
-  }
-
-  return {
-    situacao: "conciliado",
-    chave: chave.accessKey,
-    emitente: chave.components.issuerId,
-    competencia: `20${chave.components.year}-${chave.components.month}`,
-  };
-}
-```
-
-Limiares como `0.9` são um ponto de partida, não um valor calibrado: meça
-precisão e recall no seu próprio corpus antes de automatizar a decisão.
+Antes de expor a extração em uma API pública, aplique essas medidas junto às políticas de segurança, observabilidade e operação do serviço integrador.

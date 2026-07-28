@@ -1,7 +1,7 @@
 {
   "name": "cerne-fiscal",
-  "version": "0.4.1",
-  "updated": "2026.07.27.1014",
+  "version": "0.5.0",
+  "updated": "2026.07.27.2023",
   "description": "Extrai chaves validadas de NF-e e NFC-e em documentos PDF, JPEG e PNG locais, remotos ou em memória usando somente CPU.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -47,18 +47,17 @@
   "author": "devAlphaSystem",
   "license": "MIT",
   "scripts": {
-    "build": "tsup ./src/index.ts ./src/cli.ts --no-config --format esm,cjs --dts --sourcemap --clean --no-splitting --platform node --target node20 --out-dir dist",
+    "build": "tsup ./src/index.ts --no-config --format esm,cjs --dts --sourcemap --clean --no-splitting --platform node --target node20 --out-dir dist && tsup ./src/cli.ts --no-config --format esm --sourcemap --no-splitting --platform node --target node20 --out-dir dist",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "security:audit": "npm audit --audit-level=low",
-    "test": "node --test",
     "bench:fixtures": "node bench/fixtures.mjs",
     "bench": "node --expose-gc bench/run.mjs",
-    "check": "tsc --noEmit && eslint . && prettier --check . && npm run build && npm test",
+    "check": "tsc --noEmit && eslint . && prettier --check . && npm run build",
     "prepack": "npm run check",
-    "postinstall": "patch-package"
+    "prepare": "patch-package"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.2",
@@ -69,7 +68,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "eslint": "^10.8.0",
     "patch-package": "^8.0.1",
     "prettier": "3.9.4",

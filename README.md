@@ -1,192 +1,124 @@
 # Cerne Fiscal
 
-Extração local de chaves de acesso validadas de **NF-e** e **NFC-e** em
-documentos **PDF, JPEG ou PNG** — por caminho, URL ou bytes em memória.
-Processamento **somente por CPU**: sem GPU, sem serviço externo, sem credencial
-de API.
+Biblioteca e ferramenta de linha de comando para localizar, validar e classificar chaves de acesso de NF-e (modelo 55) e NFC-e (modelo 65) em documentos PDF, JPEG e PNG. As entradas podem ser caminhos locais, URLs HTTP(S) ou bytes em memória; o processamento usa CPU e combina texto nativo de PDF, Code 128, QR Code e OCR.
+
+O pacote atual é `cerne-fiscal` versão `0.5.0`, requer Node.js 20 ou superior e publica interfaces ESM, CommonJS e TypeScript.
+
+## Escopo
+
+O Cerne Fiscal:
+
+- detecta o formato pelo conteúdo do arquivo, sem confiar na extensão;
+- extrai chaves contíguas ou separadas no texto nativo do PDF;
+- reconstrói linhas visuais de PDFs quando a ordem do stream não representa a leitura humana;
+- renderiza páginas para procurar Code 128 e QR Code;
+- usa OCR como fallback ou de forma obrigatória, conforme a configuração;
+- aceita o formato numérico tradicional e o segmento de emitente alfanumérico previsto pelo validador;
+- valida UF, mês, modelo, identificador do emitente, número da nota e dígito verificador;
+- retorna resultados estruturados, fontes da evidência, páginas, confiança, métricas, avisos e erros estáveis.
+
+O pacote não consulta SEFAZ, não verifica autorização ou situação atual de uma nota, não lê XML fiscal e não inicia servidor. Uma chave retornada é estrutural e semanticamente válida de acordo com as regras implementadas; isso não comprova a existência ou a validade jurídica do documento.
+
+## Instalação
+
+Em um projeto consumidor:
 
 ```bash
 npm install cerne-fiscal
 ```
 
+O runtime exige Node.js `>=20`. Consulte [Instalação e desenvolvimento](docs/INSTALACAO.md) para uso a partir do código-fonte, build, distribuição e dependências nativas.
+
+## Uso rápido da API
+
 ```ts
 import { extractNFeAccessKeys } from "cerne-fiscal";
 
-const result = await extractNFeAccessKeys("./danfe.pdf");
+const extraction = await extractNFeAccessKeys("./danfe.pdf", {
+  performance: "balanced",
+  stopAfterFirst: true,
+});
 
-if (result.success) {
-  console.log(result.bestMatch.accessKey);
-  // 35260712345678000195550010000000011123456784
+if (extraction.success) {
+  console.log(extraction.bestMatch?.accessKey);
+} else {
+  console.error(extraction.error ?? extraction.status);
 }
 ```
 
-## Documentação
+Para NFC-e, use `extractNFCeAccessKeys`. As duas funções aceitam caminho, URL HTTP(S), `ArrayBuffer`, `Uint8Array` e, por herança, `Buffer` do Node.js.
 
-| Documento                        | Conteúdo                                                     |
-| -------------------------------- | ------------------------------------------------------------ |
-| [Instalação](docs/INSTALACAO.md) | Requisitos, scripts e benchmark                              |
-| [API](docs/API.md)               | Referência completa de funções, opções, tipos e erros        |
-| [CLI](docs/CLI.md)               | Argumentos, códigos de saída e consumo da saída JSON         |
-| [Exemplos](docs/EXEMPLOS.md)     | Receitas para URLs, concorrência, cancelamento e integrações |
-
-## Uma função por modelo fiscal
-
-```ts
-import { extractNFCeAccessKeys, extractNFeAccessKeys } from "cerne-fiscal";
-
-const nfe = await extractNFeAccessKeys("./danfe.pdf"); // somente modelo 55
-const nfce = await extractNFCeAccessKeys("./cupom.jpg"); // somente modelo 65
-```
-
-As duas compartilham pipeline e opções, mas cada chamada processa um único
-modelo — o tipo fiscal **não** faz parte de `ExtractOptions`. Em TypeScript os
-retornos são estreitados para `ExtractionResult<"55">` e `ExtractionResult<"65">`.
-
-O contrato atual extrai e valida **chaves de acesso**. Itens, produtos,
-pagamentos e tributos são uma evolução futura e não são inferidos.
-
-## Formatos de chave
-
-São aceitas tanto as chaves numéricas legadas de 44 dígitos quanto o formato
-atual de 44 caracteres, introduzido para CNPJs alfanuméricos em julho de 2026:
-
-```text
-^[0-9]{6}[A-Z0-9]{12}[0-9]{26}$
-```
-
-Apenas as 12 primeiras posições do identificador do emitente podem ser
-alfanuméricas. O leitor usa decodificação genérica de Code 128, aceitando o Code
-Set C legado e a representação híbrida atual em Code Set C/A.
-
-Uma chave só entra em `results` depois de passar por formato, UF, mês, modelo
-correspondente à função chamada, número da nota diferente de zero, CNPJ/CPF do
-emitente e dígito verificador oficial por módulo 11.
-
-## Como funciona
-
-| Etapa            | Aplicação                                           |
-| ---------------- | --------------------------------------------------- |
-| Texto nativo     | Somente PDF; não conta como passagem visual         |
-| Código de barras | Code 128 e QR Code                                  |
-| OCR              | Tesseract local, conforme o modo configurado        |
-| Consolidação     | Deduplicação e pontuação por evidência independente |
-
-## Perfis
-
-| Perfil     | Passagens | OCR        | Páginas | Prazo padrão |
-| ---------- | --------- | ---------- | ------- | ------------ |
-| `fast`     | 1         | `never`    | 10      | 30 s         |
-| `balanced` | 2         | `fallback` | 30      | 120 s        |
-| `accurate` | 3         | `fallback` | 50      | 300 s        |
-
-`fast` e `balanced` ignoram o trabalho visual nas páginas que já produziram uma
-chave válida em texto. `accurate` ainda executa as passagens de código de barras
-configuradas, para verificação cruzada independente. O perfil só define padrões:
-qualquer opção informada explicitamente prevalece.
-
-## Custo de memória
-
-O pico é transitório e vale por chamada: N extrações simultâneas multiplicam
-esse valor por N. Medido num JPEG de 3,9 MP e num PDF equivalente:
-
-| Etapa                                   | Pico    | Tempo  |
-| --------------------------------------- | ------- | ------ |
-| PDF com texto nativo (`stopAfterFirst`) | ~0 MB   | ~13 ms |
-| Decodificar a imagem de origem          | ~19 MB  | —      |
-| Render + leitura de código de barras    | ~49 MB  | —      |
-| Passagens extras de `accurate`          | ~44 MB  | —      |
-| **OCR**                                 | ~126 MB | ~1,7 s |
-
-**O OCR domina, e o custo é subir o motor**: criar o worker do Tesseract sem
-reconhecer nada já custa ~113 MB e ~300 ms. O reconhecimento em si é barato —
-três páginas seguidas no mesmo worker somam ~0 MB. É a mesma natureza da heap
-WebAssembly do OpenCV: runtime do motor, não trabalho útil.
-
-Por isso `fast` usa `ocr: "never"` e os demais perfis usam `fallback`, que só
-aciona o OCR quando código de barras e texto nativo falham. Force `ocr: "always"`
-apenas quando a perda de reconhecimento justificar o custo; `maxPixelsPerPage`
-governa o restante linearmente.
-
-## CLI
+## Uso rápido da CLI
 
 ```bash
 cerne-fiscal ./nota.pdf --document-type nfe --pretty
-cerne-fiscal ./cupom.jpg --document-type nfce --performance accurate --passes 5 --pretty
+cerne-fiscal ./cupom.jpg --document-type nfce --performance accurate --first
 ```
 
-Uma fonte por execução e `--document-type` obrigatório. A saída padrão contém
-somente JSON. Códigos de saída: `0` quando há chave, `2` para varredura completa
-sem chave, `1` para erro ou varredura incompleta sem chave.
+A CLI escreve exatamente um documento JSON em `stdout`. O código de saída é `0` quando há resultado (ou na ajuda), `2` quando a extração termina sem encontrar chave e `1` nos demais erros. Veja todas as opções em [CLI](docs/CLI.md).
 
-A CLI não aceita cabeçalhos nem senhas — use a API com `requestHeaders` para
-downloads autenticados.
+## Pipeline de extração
 
-## Validação independente
+O fluxo percorre, nesta ordem:
 
-O analisador e o validador não carregam dependências de PDF ou OCR:
+1. validação das opções;
+2. leitura limitada da entrada e detecção de assinatura;
+3. abertura como PDF ou imagem de página única;
+4. busca no texto nativo e nas linhas reconstruídas do PDF;
+5. renderização e leitura de Code 128/QR Code nas páginas ainda relevantes;
+6. OCR conforme `ocr: "never" | "fallback" | "always"`;
+7. revalidação fiscal, deduplicação, cálculo de confiança e ordenação.
 
-```ts
-import { validateAccessKey } from "cerne-fiscal";
+Somente chaves válidas do modelo solicitado chegam a `results`. Recursos de página, canvas, worker de OCR, documento e timeout são liberados ao final da chamada, inclusive em falhas.
 
-const validacao = validateAccessKey(chave);
-console.log(validacao.isValid, validacao.components?.documentType);
-```
+## Perfis
 
-`validateAccessKey` aceita os modelos 55 e 65 indistintamente — o filtro por
-modelo pertence apenas às funções de extração. Também são exportados
-`parseAccessKey`, `validateIssuerIdentifier`, `calculateAccessKeyCheckDigit` e
-`ACCESS_KEY_ISSUE_CODES`.
+| Perfil     | Passes padrão | OCR padrão | Páginas padrão | Pixels por página | Pixels da imagem-fonte | Timeout |
+| ---------- | ------------: | ---------- | -------------: | ----------------: | ---------------------: | ------: |
+| `fast`     |             1 | `never`    |             10 |         8.000.000 |             40.000.000 |    30 s |
+| `balanced` |             2 | `fallback` |             30 |        12.000.000 |             60.000.000 |   120 s |
+| `accurate` |             3 | `fallback` |             50 |        20.000.000 |            100.000.000 |   300 s |
 
-## Limites e escopo
+O padrão é `balanced`. Todos os limites podem ser sobrescritos dentro das faixas aceitas; `maxFileSizeBytes` tem padrão de 30 MiB em todos os perfis. Mais passes e OCR aumentam consumo de CPU, memória e latência.
 
-- A rede é usada apenas para baixar a URL informada; nada é enviado a serviços
-  externos de OCR ou processamento.
-- Resultados estruturados não reproduzem caminhos, URLs, consultas, buffers nem
-  credenciais.
-- JavaScript embutido em PDF permanece desabilitado; PDFs com senha retornam
-  `PASSWORD_REQUIRED`.
-- Tamanho, páginas, pixels, texto, tempo e cancelamento são limitados. Cada eixo
-  de imagem é limitado a 32.767 pixels, e imagens são sondadas antes da
-  decodificação completa.
-- **O pacote não é um filtro de SSRF.** Trate URLs de terceiros com política
-  própria de host, DNS/IP e redirecionamento.
-- Fora do escopo: GIF, TIFF, HEIC/HEIF, vídeo e imagens multipágina. Cada JPEG
-  ou PNG é uma única página.
+## Resultado
 
-O extrator não completa trechos ilegíveis, não cria uma chave a partir de CNPJ,
-data ou número parcial, e só aceita uma correção de OCR quando existe uma única
-alternativa integralmente válida. Fotos degradadas podem terminar legitimamente
-em `not_found`; aumentar `passes` não garante recuperação.
+As funções de extração resolvem um `ExtractionResult` com quatro estados:
 
-`precisionScore` é determinístico e versionado por `metadata.confidenceVersion`
-(hoje `"1.0.0"`), **não** uma probabilidade calibrada. Meça precisão, recall e
-falsos positivos em um corpus próprio antes de usar um limiar em automações
-fiscais.
+- `success`: uma ou mais chaves foram encontradas e o escopo configurado foi concluído;
+- `not_found`: o processamento terminou sem chave válida;
+- `partial`: houve chave antes de uma falha ou o escopo foi truncado, por exemplo por `maxPages`;
+- `error`: nenhuma chave foi preservada e ocorreu uma falha.
+
+`success` é um booleano independente do campo `status`: ele é verdadeiro sempre que `results` contém ao menos uma chave, inclusive em uma resposta `partial`. O consumidor deve avaliar ambos.
+
+## API pública
+
+Além das funções de extração, o pacote exporta:
+
+- `validateAccessKey`;
+- `parseAccessKey`;
+- `calculateAccessKeyCheckDigit`;
+- `validateIssuerIdentifier`;
+- `ACCESS_KEY_ISSUE_CODES`;
+- os tipos TypeScript da entrada, opções, resultados, componentes, problemas de validação e metadados.
+
+O contrato completo, os limites, os códigos de erro e a interpretação da confiança estão em [API](docs/API.md).
+
+## Documentação
+
+- [Instalação e desenvolvimento](docs/INSTALACAO.md)
+- [Referência da API](docs/API.md)
+- [Referência da CLI](docs/CLI.md)
+- [Exemplos de integração](docs/EXEMPLOS.md)
+- [Benchmark](bench/README.md)
 
 ## Desenvolvimento
 
-```bash
-npm install
-npm run check   # typecheck + lint + format:check + build + test
-```
+Os scripts declarados no projeto cobrem verificação de tipos, lint, formatação, build, auditoria e benchmark. O fluxo consolidado é `npm run check`; o CI executa verificação de tipos, lint, formatação e build em Node.js 20, 22 e 24, além de uma auditoria separada em Node.js 22.
 
-O repositório não versiona arquivos de teste — `npm test` executa zero testes. A
-verificação real de que uma mudança em `src/` não alterou o resultado é o
-benchmark, que compara todo o JSON de saída exceto `durationMs`:
-
-```bash
-npm run build && node bench/run.mjs --repeats 3 --compare antes
-```
-
-Detalhes em [`bench/README.md`](bench/README.md) e
-[docs/INSTALACAO.md](docs/INSTALACAO.md).
-
-## Referências
-
-- [MOC 7.0 - Visão Geral](https://www.confaz.fazenda.gov.br/legislacao/arquivo-manuais/moc7-visao-geral.pdf)
-- [Nota Técnica Conjunta DFe 2025.001 - CNPJ alfanumérico](https://www.nfe.fazenda.gov.br/Portal/exibirArquivo.aspx?conteudo=5ZkvIZt10mQ%3D)
-- [NT 2026.004 v1.01 - NF-e/NFC-e schemas](https://www.nfe.fazenda.gov.br/POrtal/exibirArquivo.aspx?AspxAutoDetectCookieSupport=1&conteudo=BTZQzgsO9Ws%3D)
+O repositório não declara um script `test` nem contém uma suíte automatizada de testes. As fixtures sintéticas e determinísticas em `bench/` verificam regressões de resultado e desempenho, mas o benchmark não faz parte do workflow de CI atual.
 
 ## Licença
 
-MIT. Veja [LICENSE](LICENSE).
+MIT. Consulte [LICENSE](LICENSE).

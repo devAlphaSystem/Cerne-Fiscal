@@ -1,17 +1,16 @@
-import { performance } from "node:perf_hooks";
-
 import { ExtractionFailure } from "./errors";
 import type { ResolvedOptions } from "./options";
+import { elapsedMilliseconds, startTimer, type MonotonicTimestamp } from "./timing";
 
 export class WorkGuard {
-  readonly #startedAt: number;
+  readonly #startedAt: MonotonicTimestamp;
   readonly #options: ResolvedOptions;
   readonly #controller = new AbortController();
   readonly #abortListener?: () => void;
   readonly #timeout?: NodeJS.Timeout;
   #stopReason: "aborted" | "timeout" | null = null;
 
-  public constructor(options: ResolvedOptions, startedAt = performance.now()) {
+  public constructor(options: ResolvedOptions, startedAt = startTimer()) {
     this.#options = options;
     this.#startedAt = startedAt;
 
@@ -25,7 +24,7 @@ export class WorkGuard {
     }
 
     if (options.timeoutMs > 0 && this.#stopReason === null) {
-      const elapsed = performance.now() - this.#startedAt;
+      const elapsed = elapsedMilliseconds(this.#startedAt);
       this.#timeout = setTimeout(
         () => {
           this.#stop("timeout");
@@ -45,7 +44,7 @@ export class WorkGuard {
       this.#stop("aborted");
       throw new ExtractionFailure("ABORTED", "Extraction was aborted.");
     }
-    if (this.#stopReason === "timeout" || (this.#options.timeoutMs > 0 && performance.now() - this.#startedAt >= this.#options.timeoutMs)) {
+    if (this.#stopReason === "timeout" || (this.#options.timeoutMs > 0 && elapsedMilliseconds(this.#startedAt) >= this.#options.timeoutMs)) {
       this.#stop("timeout");
       throw new ExtractionFailure("TIMEOUT", "Extraction exceeded its configured deadline.");
     }

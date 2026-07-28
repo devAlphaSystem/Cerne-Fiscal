@@ -28,6 +28,17 @@ interface SourceCrop {
   height: number;
 }
 
+interface ImageRenderGeometry {
+  source: SourceCrop;
+  upright: Readonly<{ width: number; height: number }>;
+  baseWidth: number;
+  baseHeight: number;
+  boost: number;
+  scale: number;
+  width: number;
+  height: number;
+}
+
 function orientedSize(width: number, height: number, orientation: number): { width: number; height: number } {
   return orientation >= 5 ? { width: height, height: width } : { width, height };
 }
@@ -241,7 +252,7 @@ function convertToGrayscale(pixels: Uint8ClampedArray): void {
   }
 }
 
-function renderImage(canvasModule: CanvasModule, image: DecodedImage, fullSource: SourceCrop, contentCrop: SourceCrop | null, orientation: number, recipe: RenderRecipe, maxPixels: number): RenderedPage {
+function resolveImageRenderGeometry(fullSource: SourceCrop, contentCrop: SourceCrop | null, orientation: number, recipe: RenderRecipe, maxPixels: number): ImageRenderGeometry {
   const source = recipe.crop === true && contentCrop !== null ? contentCrop : fullSource;
   const upright = orientedSize(source.width, source.height, orientation);
   const baseWidth = recipe.rotation % 180 === 0 ? upright.width : upright.height;
@@ -270,6 +281,17 @@ function renderImage(canvasModule: CanvasModule, image: DecodedImage, fullSource
   if (width > MAX_CANVAS_DIMENSION || height > MAX_CANVAS_DIMENSION || width * height > maxPixels) {
     throw new ExtractionFailure("RESOURCE_LIMIT", "The image exceeds the supported render dimensions.");
   }
+
+  return { source, upright, baseWidth, baseHeight, boost, scale, width, height };
+}
+
+function imageRenderKey(fullSource: SourceCrop, contentCrop: SourceCrop | null, orientation: number, recipe: RenderRecipe, maxPixels: number): string {
+  const geometry = resolveImageRenderGeometry(fullSource, contentCrop, orientation, recipe, maxPixels);
+  return JSON.stringify(["image", geometry.source.x, geometry.source.y, geometry.source.width, geometry.source.height, geometry.upright.width, geometry.upright.height, geometry.baseWidth, geometry.baseHeight, geometry.boost, geometry.scale, geometry.width, geometry.height, orientation, recipe.rotation, recipe.grayscale === true, recipe.contrast === true]);
+}
+
+function renderImage(canvasModule: CanvasModule, image: DecodedImage, fullSource: SourceCrop, contentCrop: SourceCrop | null, orientation: number, recipe: RenderRecipe, maxPixels: number): RenderedPage {
+  const { source, upright, scale, width, height } = resolveImageRenderGeometry(fullSource, contentCrop, orientation, recipe, maxPixels);
 
   let canvas: RasterCanvas | null = canvasModule.createCanvas(width, height);
   let context: Context2D | null = canvas.getContext("2d");
@@ -308,11 +330,11 @@ function renderImage(canvasModule: CanvasModule, image: DecodedImage, fullSource
       pixels ??= context.getImageData(0, 0, width, height).data;
       return pixels;
     },
-    toPng(): Buffer {
+    toPng(): Promise<Buffer> {
       if (canvas === null) {
         throw new ExtractionFailure("PROCESSING_ERROR", "The rendered image surface is already released.");
       }
-      return canvas.toBuffer("image/png");
+      return canvas.encode("png");
     },
     dispose(): void {
       pixels = null;
@@ -350,15 +372,32 @@ export async function openImageDocument(data: Uint8Array, format: "jpeg" | "png"
   validateImageDimensions(width, height, maxSourceImagePixels);
 
   const fullSource = { x: 0, y: 0, width, height };
-  const contentCrop = computeContentCrop(canvasModule, image, width, height);
+  let contentCrop: SourceCrop | null | undefined;
+  const currentImage = (): DecodedImage => {
+    if (image === null) {
+      throw new ExtractionFailure("PROCESSING_ERROR", "The image document is already closed.");
+    }
+    return image;
+  };
+  const cropForRecipe = (recipe: RenderRecipe, decodedImage: DecodedImage): SourceCrop | null => {
+    if (recipe.crop !== true) {
+      return null;
+    }
+    if (contentCrop === undefined) {
+      contentCrop = computeContentCrop(canvasModule, decodedImage, width, height);
+    }
+    return contentCrop;
+  };
   const page: DocumentPageLike = {
     pageNumber: 1,
     nativeText: () => null,
+    renderKey: (recipe, maxPixels) => {
+      const decodedImage = currentImage();
+      return imageRenderKey(fullSource, cropForRecipe(recipe, decodedImage), probe.orientation, recipe, maxPixels);
+    },
     render: (recipe, maxPixels) => {
-      if (image === null) {
-        throw new ExtractionFailure("PROCESSING_ERROR", "The image document is already closed.");
-      }
-      return Promise.resolve(renderImage(canvasModule, image, fullSource, contentCrop, probe.orientation, recipe, maxPixels));
+      const decodedImage = currentImage();
+      return Promise.resolve(renderImage(canvasModule, decodedImage, fullSource, cropForRecipe(recipe, decodedImage), probe.orientation, recipe, maxPixels));
     },
     cleanup: () => undefined,
   };

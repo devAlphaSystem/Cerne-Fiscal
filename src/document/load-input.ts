@@ -48,6 +48,12 @@ function checkedBytes(data: Uint8Array, maxFileSizeBytes: number): LoadedInput {
   return { data: bytes, size: data.byteLength, format };
 }
 
+function checkedOwnedBytes(data: Uint8Array, maxFileSizeBytes: number): LoadedInput {
+  const format = validateDocumentBytes(data, maxFileSizeBytes);
+  const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  return { data: bytes, size: data.byteLength, format };
+}
+
 function checkedRemoteUrl(url: URL): URL {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new ExtractionFailure("INVALID_INPUT", "Only HTTP and HTTPS remote URLs are accepted.");
@@ -264,7 +270,7 @@ export async function loadDocumentInput(input: DocumentInput, maxFileSizeBytes: 
       if (file.size > maxFileSizeBytes) {
         throw new ExtractionFailure("FILE_TOO_LARGE", `The document exceeds the configured ${maxFileSizeBytes}-byte limit.`);
       }
-      return checkedBytes(await readFile(input), maxFileSizeBytes);
+      return checkedOwnedBytes(await readFile(input, { signal: controls.signal }), maxFileSizeBytes);
     } catch (error) {
       if (error instanceof ExtractionFailure) {
         throw error;

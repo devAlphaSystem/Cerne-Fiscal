@@ -1,7 +1,7 @@
 {
   "name": "cerne-fiscal",
-  "version": "0.2.0",
-  "updated": "2026.07.24.2048",
+  "version": "0.3.0",
+  "updated": "2026.07.25.2014",
   "description": "Extrai chaves validadas de NF-e e NFC-e em documentos PDF, JPEG e PNG locais, remotos ou em memória usando somente CPU.",
   "type": "module",
   "main": "./dist/index.cjs",

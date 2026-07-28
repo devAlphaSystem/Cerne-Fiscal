@@ -1,4 +1,4 @@
-import type { BinaryBitmap, DecodeHintType, LuminanceSource, Reader, RGBLuminanceSource } from "@zxing/library";
+import type * as ZxingLibrary from "@zxing/library";
 
 import type { RenderedPage } from "../document/types";
 
@@ -7,34 +7,66 @@ export interface DecodedBarcode {
   source: "code128" | "qr-code";
 }
 
+interface BarcodeRuntime {
+  zxing: typeof ZxingLibrary;
+  hints: Map<ZxingLibrary.DecodeHintType, unknown>;
+}
+
+let barcodeRuntimePromise: Promise<BarcodeRuntime> | undefined;
+
+function loadBarcodeRuntime(): Promise<BarcodeRuntime> {
+  barcodeRuntimePromise ??= import("@zxing/library").then((imported) => {
+    const zxing = (imported as unknown as { default?: typeof imported }).default ?? imported;
+    const { BarcodeFormat, DecodeHintType } = zxing;
+    const hints = new Map<ZxingLibrary.DecodeHintType, unknown>();
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.CODE_128, BarcodeFormat.QR_CODE]);
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    return { zxing, hints };
+  }).catch((error: unknown) => {
+    barcodeRuntimePromise = undefined;
+    throw error;
+  });
+  return barcodeRuntimePromise;
+}
+
 /**
  * A one-pixel box blur fuses the dotted modules of thermal-printer barcodes
  * into solid areas, which binarizes far more reliably in photographs.
  */
 function boxBlurLuminance(source: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray {
-  const horizontal = new Float32Array(width * height);
-  const output = new Uint8ClampedArray(width * height);
+  const length = width * height;
+  const horizontal = new Uint16Array(length);
+  const output = new Uint8ClampedArray(length);
+  const lastColumn = width - 1;
   for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width;
     for (let x = 0; x < width; x += 1) {
-      const left = source[y * width + Math.max(0, x - 1)] ?? 0;
-      const center = source[y * width + x] ?? 0;
-      const right = source[y * width + Math.min(width - 1, x + 1)] ?? 0;
-      horizontal[y * width + x] = (left + center + right) / 3;
+      const index = rowOffset + x;
+      const left = source[x === 0 ? index : index - 1] ?? 0;
+      const center = source[index] ?? 0;
+      const right = source[x === lastColumn ? index : index + 1] ?? 0;
+      horizontal[index] = left + center + right;
     }
   }
+
+  const lastRow = height - 1;
   for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width;
+    const topOffset = y === 0 ? rowOffset : rowOffset - width;
+    const bottomOffset = y === lastRow ? rowOffset : rowOffset + width;
     for (let x = 0; x < width; x += 1) {
-      const top = horizontal[Math.max(0, y - 1) * width + x] ?? 0;
-      const center = horizontal[y * width + x] ?? 0;
-      const bottom = horizontal[Math.min(height - 1, y + 1) * width + x] ?? 0;
-      output[y * width + x] = (top + center + bottom) / 3;
+      const index = rowOffset + x;
+      const top = horizontal[topOffset + x] ?? 0;
+      const center = horizontal[index] ?? 0;
+      const bottom = horizontal[bottomOffset + x] ?? 0;
+      output[index] = (top + center + bottom) / 9;
     }
   }
   return output;
 }
 
-function scanRegions(source: RGBLuminanceSource, width: number, height: number): LuminanceSource[] {
-  const regions: LuminanceSource[] = [source];
+function scanRegions(source: ZxingLibrary.RGBLuminanceSource, width: number, height: number): ZxingLibrary.LuminanceSource[] {
+  const regions: ZxingLibrary.LuminanceSource[] = [source];
   const lowerRegionTop = Math.floor(height * 0.45);
   const rightRegionLeft = Math.floor(width * 0.45);
   const crops = [
@@ -51,7 +83,7 @@ function scanRegions(source: RGBLuminanceSource, width: number, height: number):
   return regions;
 }
 
-function decodeBitmap(reader: Reader, bitmap: BinaryBitmap, hints: Map<DecodeHintType, unknown>, source: DecodedBarcode["source"]): DecodedBarcode | null {
+function decodeBitmap(reader: ZxingLibrary.Reader, bitmap: ZxingLibrary.BinaryBitmap, hints: Map<ZxingLibrary.DecodeHintType, unknown>, source: DecodedBarcode["source"]): DecodedBarcode | null {
   try {
     const result = reader.decode(bitmap, hints);
     return {
@@ -65,14 +97,11 @@ function decodeBitmap(reader: Reader, bitmap: BinaryBitmap, hints: Map<DecodeHin
   }
 }
 
-export async function readBarcodes(rendered: RenderedPage, photographicEnhancements = false): Promise<DecodedBarcode[]> {
-  const imported = await import("@zxing/library");
-  const zxing = (imported as unknown as { default?: typeof imported }).default ?? imported;
-  const { BarcodeFormat, BinaryBitmap, Code128Reader, DecodeHintType, GlobalHistogramBinarizer, HybridBinarizer, InvertedLuminanceSource, QRCodeReader, RGBLuminanceSource } = zxing;
-  const hints = new Map<DecodeHintType, unknown>();
-  hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.CODE_128, BarcodeFormat.QR_CODE]);
-  hints.set(DecodeHintType.TRY_HARDER, true);
+export async function readBarcodes(rendered: RenderedPage, photographicEnhancements = false, checkpoint?: () => void): Promise<DecodedBarcode[]> {
+  const { zxing, hints } = await loadBarcodeRuntime();
+  const { BinaryBitmap, Code128Reader, GlobalHistogramBinarizer, HybridBinarizer, InvertedLuminanceSource, QRCodeReader, RGBLuminanceSource } = zxing;
 
+  checkpoint?.();
   const pixels = rendered.getPixels();
   const luminance = new Uint8ClampedArray(rendered.width * rendered.height);
   for (let pixel = 0, rgba = 0; pixel < luminance.length; pixel += 1, rgba += 4) {
@@ -83,7 +112,7 @@ export async function readBarcodes(rendered: RenderedPage, photographicEnhanceme
   }
   const source = new RGBLuminanceSource(luminance, rendered.width, rendered.height);
   const attempts: Array<{
-    reader: Reader;
+    reader: ZxingLibrary.Reader;
     source: DecodedBarcode["source"];
   }> = [
     { reader: new Code128Reader(), source: "code128" },
@@ -92,19 +121,22 @@ export async function readBarcodes(rendered: RenderedPage, photographicEnhanceme
 
   const unique = new Map<string, DecodedBarcode>();
   const regions = scanRegions(source, rendered.width, rendered.height);
-  let blurredSource: RGBLuminanceSource | null = null;
+  let blurredSource: ZxingLibrary.RGBLuminanceSource | null = null;
   for (const [regionIndex, region] of regions.entries()) {
-    const candidateSources: LuminanceSource[] = [region];
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    checkpoint?.();
+    const candidateSources: ZxingLibrary.LuminanceSource[] = [region];
     if (photographicEnhancements && regionIndex === 0) {
       blurredSource ??= new RGBLuminanceSource(boxBlurLuminance(luminance, rendered.width, rendered.height), rendered.width, rendered.height);
       candidateSources.push(new InvertedLuminanceSource(region), blurredSource);
     }
+    const bitmapsBySource = candidateSources.map((candidateSource) => ({
+      hybrid: new BinaryBitmap(new HybridBinarizer(candidateSource)),
+      global: photographicEnhancements ? new BinaryBitmap(new GlobalHistogramBinarizer(candidateSource)) : null,
+    }));
     for (const attempt of attempts) {
-      for (const candidateSource of candidateSources) {
-        const bitmaps = [new BinaryBitmap(new HybridBinarizer(candidateSource))];
-        if (photographicEnhancements) {
-          bitmaps.push(new BinaryBitmap(new GlobalHistogramBinarizer(candidateSource)));
-        }
+      for (const bitmapSet of bitmapsBySource) {
+        const bitmaps = attempt.source === "code128" || bitmapSet.global === null ? [bitmapSet.hybrid] : [bitmapSet.hybrid, bitmapSet.global];
         for (const bitmap of bitmaps) {
           const result = decodeBitmap(attempt.reader, bitmap, hints, attempt.source);
           if (result !== null) {

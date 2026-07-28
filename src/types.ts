@@ -80,6 +80,7 @@ export interface ExtractionMetadata {
   sourceImageHeight?: number;
   maxPixelsPerPage: number;
   maxSourceImagePixels: number;
+  /** Full elapsed API/CLI duration in milliseconds, measured with a monotonic high-resolution clock. */
   durationMs: number;
   complete: boolean;
   confidenceVersion: "1.0.0";

@@ -1,4 +1,5 @@
 import { extractNFCeAccessKeys, extractNFeAccessKeys } from "../extractor";
+import { elapsedMilliseconds, startTimer } from "../timing";
 import type { ExtractOptions, ExtractionResult } from "../types";
 
 export interface CliIo {
@@ -146,6 +147,7 @@ function cliError(message: string): ExtractionResult {
 }
 
 export async function runCli(args: string[], io: CliIo = { stdout: process.stdout }): Promise<number> {
+  const startedAt = startTimer();
   try {
     const parsed = parseCliArguments(args);
     if ("name" in parsed) {
@@ -153,6 +155,7 @@ export async function runCli(args: string[], io: CliIo = { stdout: process.stdou
       return 0;
     }
     const result = await (parsed.documentType === "nfe" ? extractNFeAccessKeys : extractNFCeAccessKeys)(parsed.source, parsed.options);
+    result.metadata.durationMs = elapsedMilliseconds(startedAt);
     io.stdout.write(`${JSON.stringify(result, null, parsed.pretty ? 2 : undefined)}\n`);
     if (result.success) {
       return 0;
@@ -160,7 +163,9 @@ export async function runCli(args: string[], io: CliIo = { stdout: process.stdou
     return result.status === "not_found" ? 2 : 1;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invalid CLI arguments.";
-    io.stdout.write(`${JSON.stringify(cliError(message))}\n`);
+    const result = cliError(message);
+    result.metadata.durationMs = elapsedMilliseconds(startedAt);
+    io.stdout.write(`${JSON.stringify(result)}\n`);
     return 1;
   }
 }

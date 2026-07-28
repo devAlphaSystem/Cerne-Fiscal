@@ -64,11 +64,11 @@ export async function renderPage(page: PdfPageLike, recipe: RenderRecipe, maxPix
       pixels ??= context.getImageData(0, 0, width, height).data;
       return pixels;
     },
-    toPng(): Buffer {
+    toPng(): Promise<Buffer> {
       if (canvas === null) {
         throw new ExtractionFailure("PROCESSING_ERROR", "The rendered PDF surface is already released.");
       }
-      return canvas.toBuffer("image/png");
+      return canvas.encode("png");
     },
     dispose(): void {
       pixels = null;

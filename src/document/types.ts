@@ -18,7 +18,7 @@ export interface RenderedPage {
   appliedScale: number;
   rotation: number;
   getPixels(): Uint8ClampedArray;
-  toPng(): Buffer;
+  toPng(): Promise<Buffer>;
   dispose(): void;
 }
 
@@ -26,6 +26,8 @@ export interface DocumentPageLike {
   pageNumber: number;
   /** Structured native text, or null for formats without a text layer. */
   nativeText(): Promise<DocumentPageText> | null;
+  /** Exact key for a planned render, when the document can resolve it without rendering. */
+  renderKey?(recipe: RenderRecipe, maxPixels: number): string;
   render(recipe: RenderRecipe, maxPixels: number): Promise<RenderedPage>;
   cleanup(): void;
 }

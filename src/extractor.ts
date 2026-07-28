@@ -1,5 +1,3 @@
-import { performance } from "node:perf_hooks";
-
 import { findCandidatesInDecodedValue, findCandidatesInText } from "./candidates/from-text";
 import { findCandidatesInOcrText } from "./candidates/from-ocr";
 import type { CandidateEvidence } from "./candidates/types";
@@ -11,6 +9,7 @@ import { ExtractionFailure } from "./errors";
 import { getBarcodeRenderVariants, getRenderRecipes, InvalidOptionsError, resolveOptions, type RenderRecipe, type ResolvedOptions } from "./options";
 import type { OcrSession } from "./recognition/ocr-reader";
 import { mergeEvidence } from "./scoring/merge-results";
+import { elapsedMilliseconds, startTimer, type MonotonicTimestamp } from "./timing";
 import type { DocumentFormat, DocumentInput, ExtractOptions, ExtractedAccessKey, ExtractionErrorInfo, ExtractionMetadata, ExtractionResult, ExtractionStatus } from "./types";
 import type { AccessKeyModel } from "./validation/access-key";
 
@@ -65,7 +64,7 @@ function hasPageEvidence(evidence: CandidateEvidence[], page: number): boolean {
   return evidence.some((candidate) => candidate.page === page);
 }
 
-function metadata(options: ResolvedOptions, state: MutableRunState, startedAt: number): ExtractionMetadata {
+function metadata(options: ResolvedOptions, state: MutableRunState, startedAt: MonotonicTimestamp): ExtractionMetadata {
   return {
     performance: options.performance,
     ocrMode: options.ocr,
@@ -82,13 +81,13 @@ function metadata(options: ResolvedOptions, state: MutableRunState, startedAt: n
     ...(state.sourceImageHeight === null ? {} : { sourceImageHeight: state.sourceImageHeight }),
     maxPixelsPerPage: options.maxPixelsPerPage,
     maxSourceImagePixels: options.maxSourceImagePixels,
-    durationMs: Number((performance.now() - startedAt).toFixed(2)),
+    durationMs: elapsedMilliseconds(startedAt),
     complete: state.complete,
     confidenceVersion: "1.0.0",
   };
 }
 
-function resultFromState<TModel extends AccessKeyModel>(expectedModel: TModel, options: ResolvedOptions, state: MutableRunState, startedAt: number, error: ExtractionErrorInfo | null = null): ExtractionResult<TModel> {
+function resultFromState<TModel extends AccessKeyModel>(expectedModel: TModel, options: ResolvedOptions, state: MutableRunState, startedAt: MonotonicTimestamp, error: ExtractionErrorInfo | null = null): ExtractionResult<TModel> {
   const results = mergeEvidence(state.evidence, expectedModel);
   let status: ExtractionStatus;
   if (error !== null) {
@@ -112,7 +111,12 @@ function resultFromState<TModel extends AccessKeyModel>(expectedModel: TModel, o
   };
 }
 
-function invalidOptionsResult<TModel extends AccessKeyModel>(expectedModel: TModel, error: InvalidOptionsError, startedAt: number): ExtractionResult<TModel> {
+function finalizeResultDuration<TModel extends AccessKeyModel>(result: ExtractionResult<TModel>, startedAt: MonotonicTimestamp): ExtractionResult<TModel> {
+  result.metadata.durationMs = elapsedMilliseconds(startedAt);
+  return result;
+}
+
+function invalidOptionsResult<TModel extends AccessKeyModel>(expectedModel: TModel, error: InvalidOptionsError, startedAt: MonotonicTimestamp): ExtractionResult<TModel> {
   const options = resolveOptions();
   const state = emptyState();
   state.complete = false;
@@ -183,19 +187,27 @@ async function collectBarcodeEvidence(handle: DocumentHandle, state: MutableRunS
       guard.check();
       const candidates = await withPage(handle, pageNumber, async (page) => {
         const collected: CandidateEvidence[] = [];
+        const attemptedRenderKeys = new Set<string>();
         const attemptedSizes = new Set<string>();
         for (const variant of getBarcodeRenderVariants(recipe, handle.format)) {
           guard.check();
+          const renderKey = page.renderKey?.(variant, options.maxPixelsPerPage);
+          if (renderKey !== undefined && attemptedRenderKeys.has(renderKey)) {
+            continue;
+          }
           const rendered = await page.render(variant, options.maxPixelsPerPage);
           state.renderAttempts += 1;
           try {
+            if (renderKey !== undefined) {
+              attemptedRenderKeys.add(renderKey);
+            }
             const sizeKey = `${rendered.width}x${rendered.height}`;
             if (attemptedSizes.has(sizeKey)) {
               continue;
             }
             attemptedSizes.add(sizeKey);
             state.renderedPages.add(pageNumber);
-            collected.push(...(await readBarcodes(rendered, handle.format !== "pdf")).flatMap((barcode) => findCandidatesInDecodedValue(barcode.text, pageNumber, barcode.source, passIndex + 1, expectedModel)));
+            collected.push(...(await readBarcodes(rendered, handle.format !== "pdf", () => guard.check())).flatMap((barcode) => findCandidatesInDecodedValue(barcode.text, pageNumber, barcode.source, passIndex + 1, expectedModel)));
             if (collected.length > 0) {
               break;
             }
@@ -244,7 +256,9 @@ async function collectOcrEvidence(handle: DocumentHandle, state: MutableRunState
           try {
             state.renderedPages.add(pageNumber);
             state.ocrPages.add(pageNumber);
-            const recognized = await session.recognize(rendered.toPng());
+            const png = await rendered.toPng();
+            guard.check();
+            const recognized = await session.recognize(png);
             return findCandidatesInOcrText(recognized.text, pageNumber, recipes.indexOf(recipe) + 1, recognized.confidence, expectedModel);
           } finally {
             rendered.dispose();
@@ -264,22 +278,22 @@ async function collectOcrEvidence(handle: DocumentHandle, state: MutableRunState
   }
 }
 
-async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: DocumentInput, expectedModel: TModel, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<TModel>> {
-  const startedAt = performance.now();
+async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: DocumentInput, expectedModel: TModel, optionsInput: ExtractOptions, startedAt: MonotonicTimestamp): Promise<ExtractionResult<TModel>> {
   let options: ResolvedOptions;
   try {
     options = resolveOptions(optionsInput);
   } catch (error) {
     if (error instanceof InvalidOptionsError) {
-      return invalidOptionsResult(expectedModel, error, startedAt);
+      return finalizeResultDuration(invalidOptionsResult(expectedModel, error, startedAt), startedAt);
     }
-    return invalidOptionsResult(expectedModel, new InvalidOptionsError("Extraction options are invalid."), startedAt);
+    return finalizeResultDuration(invalidOptionsResult(expectedModel, new InvalidOptionsError("Extraction options are invalid."), startedAt), startedAt);
   }
 
   const state = emptyState();
   const guard = new WorkGuard(options, startedAt);
   let handle: DocumentHandle | null = null;
   let ocrSession: OcrSession | null = null;
+  let result: ExtractionResult<TModel>;
   try {
     guard.check();
     const loaded = await loadDocumentInput(input, options.maxFileSizeBytes, {
@@ -313,7 +327,7 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: D
     if (options.stopAfterFirst && state.evidence.length > 0) {
       state.complete = true;
     }
-    return resultFromState(expectedModel, options, state, startedAt);
+    result = resultFromState(expectedModel, options, state, startedAt);
   } catch (error) {
     state.complete = false;
     let resolvedError: unknown = error;
@@ -328,15 +342,15 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: D
         : new ExtractionFailure("PROCESSING_ERROR", "The document could not be processed.", {
             cause: resolvedError,
           });
-    return resultFromState(expectedModel, options, state, startedAt, {
+    result = resultFromState(expectedModel, options, state, startedAt, {
       code: failure.code,
       message: failure.message,
     });
   } finally {
     guard.dispose();
-    await ocrSession?.terminate().catch(() => undefined);
-    await handle?.close().catch(() => undefined);
+    await Promise.all([ocrSession?.terminate().catch(() => undefined), handle?.close().catch(() => undefined)]);
   }
+  return finalizeResultDuration(result, startedAt);
 }
 
 /**
@@ -345,7 +359,8 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: D
  * This function resolves to a JSON-safe result for expected input and processing errors.
  */
 export function extractNFeAccessKeys(input: DocumentInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<"55">> {
-  return extractAccessKeysForModel(input, "55", optionsInput);
+  const startedAt = startTimer();
+  return extractAccessKeysForModel(input, "55", optionsInput, startedAt);
 }
 
 /**
@@ -354,7 +369,8 @@ export function extractNFeAccessKeys(input: DocumentInput, optionsInput: Extract
  * This function resolves to a JSON-safe result for expected input and processing errors.
  */
 export function extractNFCeAccessKeys(input: DocumentInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<"65">> {
-  return extractAccessKeysForModel(input, "65", optionsInput);
+  const startedAt = startTimer();
+  return extractAccessKeysForModel(input, "65", optionsInput, startedAt);
 }
 
 export type { ExtractedAccessKey };

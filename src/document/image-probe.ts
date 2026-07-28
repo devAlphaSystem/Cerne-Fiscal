@@ -3,7 +3,6 @@ import { ExtractionFailure } from "../errors";
 export interface ImageProbe {
   width: number;
   height: number;
-  /** EXIF orientation 1 through 8; 1 when absent, unreadable, or not applicable. */
   orientation: number;
 }
 
@@ -28,10 +27,6 @@ function readUInt32BE(data: Uint8Array, offset: number): number | null {
   return (data[offset] ?? 0) * 0x1_00_00_00 + ((data[offset + 1] ?? 0) << 16) + ((data[offset + 2] ?? 0) << 8) + (data[offset + 3] ?? 0);
 }
 
-/**
- * Walks the PNG chunk layout up to IEND so truncated or structurally broken
- * files are rejected before the native decoder ever sees them.
- */
 function validatePngChunks(data: Uint8Array): void {
   let offset = 8;
   let sawIhdr = false;
@@ -89,11 +84,6 @@ function probePng(data: Uint8Array): ImageProbe {
   return { width, height, orientation: 1 };
 }
 
-/**
- * Reads the EXIF orientation from an APP1 payload. Malformed metadata is
- * ignored instead of failing the document, because the pixel data may still
- * be perfectly readable.
- */
 function exifOrientation(data: Uint8Array, start: number, end: number): number {
   const header = data.subarray(start, Math.min(end, start + 6));
   if (String.fromCharCode(...header) !== "Exif\0\0") {
@@ -184,10 +174,6 @@ export function probeImage(data: Uint8Array, format: "jpeg" | "png"): ImageProbe
   return format === "png" ? probePng(data) : probeJpeg(data);
 }
 
-/**
- * Rejects hostile or oversized dimensions before any pixel allocation. Both
- * claimed header dimensions and decoded dimensions must pass this check.
- */
 export function validateImageDimensions(width: number, height: number, maxSourceImagePixels: number): void {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
     throw new ExtractionFailure("INVALID_IMAGE", "The image declares invalid dimensions.");

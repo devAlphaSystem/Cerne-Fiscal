@@ -70,6 +70,9 @@ export async function renderPage(page: PdfPageLike, recipe: RenderRecipe, maxPix
       }
       return canvas.encode("png");
     },
+    releasePixels(): void {
+      pixels = null;
+    },
     dispose(): void {
       pixels = null;
       context = null;

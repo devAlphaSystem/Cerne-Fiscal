@@ -7,11 +7,6 @@ export interface DocumentPageText {
   hasText: boolean;
 }
 
-/**
- * A rendered visual page shared by every recognition stage. PDF pages produce
- * it through pdfjs rendering; standalone images produce it directly from the
- * decoded pixels without pretending to be PDFs.
- */
 export interface RenderedPage {
   width: number;
   height: number;
@@ -19,14 +14,13 @@ export interface RenderedPage {
   rotation: number;
   getPixels(): Uint8ClampedArray;
   toPng(): Promise<Buffer>;
+  releasePixels(): void;
   dispose(): void;
 }
 
 export interface DocumentPageLike {
   pageNumber: number;
-  /** Structured native text, or null for formats without a text layer. */
   nativeText(): Promise<DocumentPageText> | null;
-  /** Exact key for a planned render, when the document can resolve it without rendering. */
   renderKey?(recipe: RenderRecipe, maxPixels: number): string;
   render(recipe: RenderRecipe, maxPixels: number): Promise<RenderedPage>;
   cleanup(): void;

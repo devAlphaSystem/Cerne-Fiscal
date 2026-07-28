@@ -147,10 +147,6 @@ function validateZeroPaddedCpf(value: string): boolean {
   return cpf.slice(9) === `${firstCheckDigit}${secondCheckDigit}`;
 }
 
-/**
- * Validates the 14-character issuer field as either a numeric/alphanumeric
- * CNPJ or an 11-digit CPF padded with three leading zeroes.
- */
 export function validateIssuerIdentifier(value: string): boolean {
   const normalizedValue = normalizeAccessKey(value);
 
@@ -161,11 +157,6 @@ export function validateIssuerIdentifier(value: string): boolean {
   return validateCnpj(normalizedValue) || validateZeroPaddedCpf(normalizedValue);
 }
 
-/**
- * Calculates the final digit of a 44-character NF-e/NFC-e access key.
- * Alphanumeric characters use their ASCII value minus 48, as required for
- * access keys containing an alphanumeric CNPJ.
- */
 export function calculateAccessKeyCheckDigit(body: string): number {
   const normalizedBody = normalizeAccessKey(body);
 
@@ -176,11 +167,6 @@ export function calculateAccessKeyCheckDigit(body: string): number {
   return calculateAsciiModulo11Digit(normalizedBody);
 }
 
-/**
- * Splits a format-valid access key into the fields defined by the NF-e layout.
- * Semantic checks such as model, state code and month are performed by
- * validateAccessKey so callers can inspect malformed-but-parseable candidates.
- */
 export function parseAccessKey(value: string): AccessKeyComponents {
   const normalizedValue = normalizeAccessKey(value);
   const format = getAccessKeyFormat(normalizedValue);

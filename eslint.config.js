@@ -21,7 +21,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["test/**/*.mjs"],
+    files: ["bench/**/*.mjs", "test/**/*.mjs"],
     languageOptions: {
       globals: {
         AbortController: "readonly",

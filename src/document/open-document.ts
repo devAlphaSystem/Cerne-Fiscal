@@ -19,10 +19,6 @@ function pdfPageAdapter(page: PdfPageLike): DocumentPageLike {
   };
 }
 
-/**
- * Opens a byte-sniffed document behind one shared visual-page contract. PDFs
- * keep their existing pdfjs path; JPEG and PNG become one-page documents.
- */
 export async function openDocument(loaded: LoadedInput, maxSourceImagePixels: number, maxCanvasPixels: number): Promise<DocumentHandle> {
   if (loaded.format === "pdf") {
     const handle = await openPdfDocument(loaded.data, maxSourceImagePixels, maxCanvasPixels);

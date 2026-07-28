@@ -43,7 +43,6 @@ function orientedSize(width: number, height: number, orientation: number): { wid
   return orientation >= 5 ? { width: height, height: width } : { width, height };
 }
 
-/** Maps decoded (raw) pixels into the EXIF-upright space of size uw by uh. */
 function applyExifTransform(context: Context2D, orientation: number, uw: number, uh: number): void {
   switch (orientation) {
     case 2:
@@ -72,7 +71,6 @@ function applyExifTransform(context: Context2D, orientation: number, uw: number,
   }
 }
 
-/** Rotates the EXIF-upright space into the final canvas, clockwise like PDF render recipes. */
 function applyRecipeRotation(context: Context2D, rotation: number, canvasWidth: number, canvasHeight: number): void {
   switch (rotation) {
     case 90:
@@ -94,7 +92,7 @@ function applyRecipeRotation(context: Context2D, rotation: number, canvasWidth: 
 
 function luminanceAt(pixels: Uint8ClampedArray, index: number): number {
   const offset = index * 4;
-  return ((pixels[offset] ?? 255) + (pixels[offset + 1] ?? 255) * 2 + (pixels[offset + 2] ?? 255)) >> 2;
+  return (pixels[offset]! + pixels[offset + 1]! * 2 + pixels[offset + 2]!) >> 2;
 }
 
 function median(values: number[]): number {
@@ -102,11 +100,6 @@ function median(values: number[]): number {
   return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
-/**
- * Conservatively trims very large uniform margins so recognition passes spend
- * their pixel budget on the document itself. The crop is computed once in raw
- * decoded coordinates, but only recipes that explicitly opt in may use it.
- */
 function computeContentCrop(canvasModule: CanvasModule, image: DecodedImage, width: number, height: number): SourceCrop | null {
   const probeScale = Math.min(1, Math.sqrt(CROP_PROBE_MAX_PIXELS / (width * height)));
   const probeWidth = Math.max(1, Math.floor(width * probeScale));
@@ -149,7 +142,7 @@ function computeContentCrop(canvasModule: CanvasModule, image: DecodedImage, wid
       for (let x = 0; x < probeWidth; x += 1) {
         if (Math.abs(luminanceAt(pixels, y * probeWidth + x) - background) > CROP_LUMINANCE_TOLERANCE) {
           rowCount += 1;
-          columnCounts[x] = (columnCounts[x] ?? 0) + 1;
+          columnCounts[x] = columnCounts[x]! + 1;
         }
       }
       if (rowCount >= rowContentThreshold) {
@@ -160,7 +153,7 @@ function computeContentCrop(canvasModule: CanvasModule, image: DecodedImage, wid
     let left = -1;
     let right = -1;
     for (let x = 0; x < probeWidth; x += 1) {
-      if ((columnCounts[x] ?? 0) >= columnContentThreshold) {
+      if (columnCounts[x]! >= columnContentThreshold) {
         left = left === -1 ? x : left;
         right = x;
       }
@@ -205,7 +198,7 @@ function luminancePercentile(histogram: Uint32Array, total: number, fraction: nu
   const target = total * fraction;
   let accumulated = 0;
   for (let value = 0; value < histogram.length; value += 1) {
-    accumulated += histogram[value] ?? 0;
+    accumulated += histogram[value]!;
     if (accumulated >= target) {
       return value;
     }
@@ -213,16 +206,12 @@ function luminancePercentile(histogram: Uint32Array, total: number, fraction: nu
   return histogram.length - 1;
 }
 
-/**
- * Moderate deterministic contrast stretch used only by recipes that request
- * it; the first pass always keeps the original pixels untouched.
- */
 function stretchContrast(pixels: Uint8ClampedArray): boolean {
   const histogram = new Uint32Array(256);
   const pixelCount = Math.floor(pixels.length / 4);
   for (let index = 0; index < pixelCount; index += 1) {
     const luminance = luminanceAt(pixels, index);
-    histogram[luminance] = (histogram[luminance] ?? 0) + 1;
+    histogram[luminance] = histogram[luminance]! + 1;
   }
   const low = luminancePercentile(histogram, pixelCount, 0.02);
   const high = luminancePercentile(histogram, pixelCount, 0.98);
@@ -236,16 +225,16 @@ function stretchContrast(pixels: Uint8ClampedArray): boolean {
     lookup[value] = ((value - low) * 255) / range;
   }
   for (let offset = 0; offset < pixels.length; offset += 4) {
-    pixels[offset] = lookup[pixels[offset] ?? 0] ?? 0;
-    pixels[offset + 1] = lookup[pixels[offset + 1] ?? 0] ?? 0;
-    pixels[offset + 2] = lookup[pixels[offset + 2] ?? 0] ?? 0;
+    pixels[offset] = lookup[pixels[offset]!]!;
+    pixels[offset + 1] = lookup[pixels[offset + 1]!]!;
+    pixels[offset + 2] = lookup[pixels[offset + 2]!]!;
   }
   return true;
 }
 
 function convertToGrayscale(pixels: Uint8ClampedArray): void {
   for (let offset = 0; offset < pixels.length; offset += 4) {
-    const luminance = ((pixels[offset] ?? 255) + (pixels[offset + 1] ?? 255) * 2 + (pixels[offset + 2] ?? 255)) >> 2;
+    const luminance = (pixels[offset]! + pixels[offset + 1]! * 2 + pixels[offset + 2]!) >> 2;
     pixels[offset] = luminance;
     pixels[offset + 1] = luminance;
     pixels[offset + 2] = luminance;
@@ -336,6 +325,9 @@ function renderImage(canvasModule: CanvasModule, image: DecodedImage, fullSource
       }
       return canvas.encode("png");
     },
+    releasePixels(): void {
+      pixels = null;
+    },
     dispose(): void {
       pixels = null;
       context = null;
@@ -348,11 +340,6 @@ function renderImage(canvasModule: CanvasModule, image: DecodedImage, fullSource
   };
 }
 
-/**
- * Opens a standalone JPEG or PNG as a one-page visual document. Header
- * dimensions are validated before any decode so hostile files cannot trigger
- * an uncontrolled allocation, and the decoded dimensions are validated again.
- */
 export async function openImageDocument(data: Uint8Array, format: "jpeg" | "png", maxSourceImagePixels: number): Promise<DocumentHandle> {
   const probe = probeImage(data, format);
   validateImageDimensions(probe.width, probe.height, maxSourceImagePixels);

@@ -4,7 +4,7 @@ import type { CandidateEvidence } from "./candidates/types";
 import { WorkGuard } from "./deadline";
 import { loadDocumentInput } from "./document/load-input";
 import { openDocument } from "./document/open-document";
-import type { DocumentHandle, DocumentPageLike, DocumentPageText } from "./document/types";
+import type { DocumentHandle, DocumentPageLike, DocumentPageText, RenderedPage } from "./document/types";
 import { ExtractionFailure } from "./errors";
 import { getBarcodeRenderVariants, getRenderRecipes, InvalidOptionsError, resolveOptions, type RenderRecipe, type ResolvedOptions } from "./options";
 import type { OcrSession } from "./recognition/ocr-reader";
@@ -27,6 +27,41 @@ interface MutableRunState {
   sourceImageWidth: number | null;
   sourceImageHeight: number | null;
   complete: boolean;
+}
+
+class RenderReuse {
+  readonly #wanted: RenderRecipe | null;
+  #pageNumber = 0;
+  #rendered: RenderedPage | null = null;
+
+  public constructor(wanted: RenderRecipe | null) {
+    this.#wanted = wanted;
+  }
+
+  public offer(pageNumber: number, recipe: RenderRecipe, rendered: RenderedPage): void {
+    if (recipe !== this.#wanted) {
+      rendered.dispose();
+      return;
+    }
+    this.dispose();
+    rendered.releasePixels();
+    this.#pageNumber = pageNumber;
+    this.#rendered = rendered;
+  }
+
+  public take(pageNumber: number, recipe: RenderRecipe): RenderedPage | null {
+    if (this.#rendered === null || recipe !== this.#wanted || pageNumber !== this.#pageNumber) {
+      return null;
+    }
+    const rendered = this.#rendered;
+    this.#rendered = null;
+    return rendered;
+  }
+
+  public dispose(): void {
+    this.#rendered?.dispose();
+    this.#rendered = null;
+  }
 }
 
 function emptyState(): MutableRunState {
@@ -126,12 +161,27 @@ function invalidOptionsResult<TModel extends AccessKeyModel>(expectedModel: TMod
   });
 }
 
-async function withPage<T>(handle: DocumentHandle, pageNumber: number, work: (page: DocumentPageLike) => Promise<T>): Promise<T> {
-  const page = await handle.getPage(pageNumber);
-  try {
-    return await work(page);
-  } finally {
-    page.cleanup();
+class PageCursor {
+  readonly #handle: DocumentHandle;
+  #pageNumber = 0;
+  #page: DocumentPageLike | null = null;
+
+  public constructor(handle: DocumentHandle) {
+    this.#handle = handle;
+  }
+
+  public async use<T>(pageNumber: number, work: (page: DocumentPageLike) => Promise<T>): Promise<T> {
+    if (this.#pageNumber !== pageNumber) {
+      this.release();
+    }
+    this.#page ??= await this.#handle.getPage(pageNumber);
+    this.#pageNumber = pageNumber;
+    return work(this.#page);
+  }
+
+  public release(): void {
+    this.#page?.cleanup();
+    this.#page = null;
   }
 }
 
@@ -147,11 +197,11 @@ function ocrRecipes(recipes: RenderRecipe[], options: ResolvedOptions, format: D
   return selected;
 }
 
-async function collectTextEvidence(handle: DocumentHandle, state: MutableRunState, pageLimit: number, options: ResolvedOptions, expectedModel: AccessKeyModel, guard: WorkGuard): Promise<number[]> {
+async function collectTextEvidence(cursor: PageCursor, state: MutableRunState, pageLimit: number, options: ResolvedOptions, expectedModel: AccessKeyModel, guard: WorkGuard): Promise<number[]> {
   const processedPages: number[] = [];
   for (let pageNumber = 1; pageNumber <= pageLimit; pageNumber += 1) {
     guard.check();
-    const candidates = await withPage(handle, pageNumber, async (page) => {
+    const candidates = await cursor.use(pageNumber, async (page) => {
       const nativeText = page.nativeText();
       return nativeText === null ? [] : textEvidence(await nativeText, pageNumber, expectedModel);
     });
@@ -166,7 +216,7 @@ async function collectTextEvidence(handle: DocumentHandle, state: MutableRunStat
   return processedPages;
 }
 
-async function collectBarcodeEvidence(handle: DocumentHandle, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, expectedModel: AccessKeyModel, guard: WorkGuard): Promise<void> {
+async function collectBarcodeEvidence(handle: DocumentHandle, cursor: PageCursor, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, expectedModel: AccessKeyModel, guard: WorkGuard, reuse: RenderReuse): Promise<void> {
   const exhaustive = options.ocr === "always" || options.performance === "accurate";
   let pending = exhaustive ? [...pages] : pages.filter((page) => !hasPageEvidence(state.evidence, page));
 
@@ -185,7 +235,7 @@ async function collectBarcodeEvidence(handle: DocumentHandle, state: MutableRunS
     const unresolved: number[] = [];
     for (const pageNumber of pending) {
       guard.check();
-      const candidates = await withPage(handle, pageNumber, async (page) => {
+      const candidates = await cursor.use(pageNumber, async (page) => {
         const collected: CandidateEvidence[] = [];
         const attemptedRenderKeys = new Set<string>();
         const attemptedSizes = new Set<string>();
@@ -212,7 +262,7 @@ async function collectBarcodeEvidence(handle: DocumentHandle, state: MutableRunS
               break;
             }
           } finally {
-            rendered.dispose();
+            reuse.offer(pageNumber, variant, rendered);
           }
         }
         return collected;
@@ -230,7 +280,7 @@ async function collectBarcodeEvidence(handle: DocumentHandle, state: MutableRunS
   }
 }
 
-async function collectOcrEvidence(handle: DocumentHandle, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, expectedModel: AccessKeyModel, guard: WorkGuard): Promise<OcrSession | null> {
+async function collectOcrEvidence(handle: DocumentHandle, cursor: PageCursor, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, expectedModel: AccessKeyModel, guard: WorkGuard, reuse: RenderReuse): Promise<OcrSession | null> {
   if (options.ocr === "never") {
     return null;
   }
@@ -250,8 +300,8 @@ async function collectOcrEvidence(handle: DocumentHandle, state: MutableRunState
     for (const pageNumber of pending) {
       for (const recipe of selectedRecipes) {
         guard.check();
-        const candidates = await withPage(handle, pageNumber, async (page) => {
-          const rendered = await page.render(recipe, options.maxPixelsPerPage);
+        const candidates = await cursor.use(pageNumber, async (page) => {
+          const rendered = reuse.take(pageNumber, recipe) ?? (await page.render(recipe, options.maxPixelsPerPage));
           state.renderAttempts += 1;
           try {
             state.renderedPages.add(pageNumber);
@@ -293,6 +343,8 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: D
   const guard = new WorkGuard(options, startedAt);
   let handle: DocumentHandle | null = null;
   let ocrSession: OcrSession | null = null;
+  let cursor: PageCursor | null = null;
+  let reuse: RenderReuse | null = null;
   let result: ExtractionResult<TModel>;
   try {
     guard.check();
@@ -314,12 +366,14 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: D
       state.warnings.push(`Only the first ${pageLimit} of ${state.pagesTotal} pages were processed because of maxPages.`);
     }
 
-    const processedPages = await collectTextEvidence(handle, state, pageLimit, options, expectedModel, guard);
+    cursor = new PageCursor(handle);
+    const processedPages = await collectTextEvidence(cursor, state, pageLimit, options, expectedModel, guard);
     if (!(options.stopAfterFirst && state.evidence.length > 0)) {
       const recipes = getRenderRecipes(options, handle.format);
-      await collectBarcodeEvidence(handle, state, processedPages, recipes, options, expectedModel, guard);
+      reuse = new RenderReuse(options.ocr === "never" ? null : (ocrRecipes(recipes, options, handle.format)[0] ?? null));
+      await collectBarcodeEvidence(handle, cursor, state, processedPages, recipes, options, expectedModel, guard, reuse);
       if (!(options.stopAfterFirst && state.evidence.length > 0)) {
-        ocrSession = await collectOcrEvidence(handle, state, processedPages, recipes, options, expectedModel, guard);
+        ocrSession = await collectOcrEvidence(handle, cursor, state, processedPages, recipes, options, expectedModel, guard, reuse);
       }
     }
 
@@ -348,26 +402,18 @@ async function extractAccessKeysForModel<TModel extends AccessKeyModel>(input: D
     });
   } finally {
     guard.dispose();
+    reuse?.dispose();
+    cursor?.release();
     await Promise.all([ocrSession?.terminate().catch(() => undefined), handle?.close().catch(() => undefined)]);
   }
   return finalizeResultDuration(result, startedAt);
 }
 
-/**
- * Extracts validated NF-e (model 55) access keys from a local path, HTTP(S)
- * URL, or in-memory PDF, JPEG, or PNG document.
- * This function resolves to a JSON-safe result for expected input and processing errors.
- */
 export function extractNFeAccessKeys(input: DocumentInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<"55">> {
   const startedAt = startTimer();
   return extractAccessKeysForModel(input, "55", optionsInput, startedAt);
 }
 
-/**
- * Extracts validated NFC-e (model 65) access keys from a local path, HTTP(S)
- * URL, or in-memory PDF, JPEG, or PNG document.
- * This function resolves to a JSON-safe result for expected input and processing errors.
- */
 export function extractNFCeAccessKeys(input: DocumentInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult<"65">> {
   const startedAt = startTimer();
   return extractAccessKeysForModel(input, "65", optionsInput, startedAt);

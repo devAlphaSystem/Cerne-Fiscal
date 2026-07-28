@@ -234,7 +234,8 @@ correspondência, entrada inválida, tempo limite e erros esperados do documento
 
 Para JPEG e PNG, `pagesTotal` é sempre `1`. `sourceImageWidth` e
 `sourceImageHeight` registram as dimensões decodificadas originais, enquanto
-`renderAttempts` informa quantas superfícies visuais foram efetivamente criadas.
+`renderAttempts` informa quantas renderizações o pipeline pediu, inclusive as
+que reaproveitam uma superfície já pronta.
 `pagesRendered` continua representando a quantidade de páginas distintas
 renderizadas. `inputFormat` pode ficar ausente quando a entrada falha antes de a
 assinatura ser reconhecida.

@@ -1,7 +1,7 @@
 {
   "name": "cerne-fiscal",
-  "version": "0.3.0",
-  "updated": "2026.07.25.2014",
+  "version": "0.4.0",
+  "updated": "2026.07.25.2354",
   "description": "Extrai chaves validadas de NF-e e NFC-e em documentos PDF, JPEG e PNG locais, remotos ou em memória usando somente CPU.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -54,6 +54,8 @@
     "format:check": "prettier --check .",
     "security:audit": "npm audit --audit-level=low",
     "test": "node --test",
+    "bench:fixtures": "node bench/fixtures.mjs",
+    "bench": "node bench/run.mjs",
     "check": "tsc --noEmit && eslint . && prettier --check . && npm run build && npm test",
     "prepack": "npm run check",
     "postinstall": "patch-package"

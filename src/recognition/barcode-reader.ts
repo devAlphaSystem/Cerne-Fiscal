@@ -29,10 +29,6 @@ function loadBarcodeRuntime(): Promise<BarcodeRuntime> {
   return barcodeRuntimePromise;
 }
 
-/**
- * A one-pixel box blur fuses the dotted modules of thermal-printer barcodes
- * into solid areas, which binarizes far more reliably in photographs.
- */
 function boxBlurLuminance(source: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray {
   const length = width * height;
   const horizontal = new Uint16Array(length);
@@ -42,9 +38,9 @@ function boxBlurLuminance(source: Uint8ClampedArray, width: number, height: numb
     const rowOffset = y * width;
     for (let x = 0; x < width; x += 1) {
       const index = rowOffset + x;
-      const left = source[x === 0 ? index : index - 1] ?? 0;
-      const center = source[index] ?? 0;
-      const right = source[x === lastColumn ? index : index + 1] ?? 0;
+      const left = source[x === 0 ? index : index - 1]!;
+      const center = source[index]!;
+      const right = source[x === lastColumn ? index : index + 1]!;
       horizontal[index] = left + center + right;
     }
   }
@@ -56,9 +52,9 @@ function boxBlurLuminance(source: Uint8ClampedArray, width: number, height: numb
     const bottomOffset = y === lastRow ? rowOffset : rowOffset + width;
     for (let x = 0; x < width; x += 1) {
       const index = rowOffset + x;
-      const top = horizontal[topOffset + x] ?? 0;
-      const center = horizontal[index] ?? 0;
-      const bottom = horizontal[bottomOffset + x] ?? 0;
+      const top = horizontal[topOffset + x]!;
+      const center = horizontal[index]!;
+      const bottom = horizontal[bottomOffset + x]!;
       output[index] = (top + center + bottom) / 9;
     }
   }
@@ -84,6 +80,8 @@ function scanRegions(source: ZxingLibrary.RGBLuminanceSource, width: number, hei
 }
 
 function decodeBitmap(reader: ZxingLibrary.Reader, bitmap: ZxingLibrary.BinaryBitmap, hints: Map<ZxingLibrary.DecodeHintType, unknown>, source: DecodedBarcode["source"]): DecodedBarcode | null {
+  const stackTraceLimit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 0;
   try {
     const result = reader.decode(bitmap, hints);
     return {
@@ -93,6 +91,7 @@ function decodeBitmap(reader: ZxingLibrary.Reader, bitmap: ZxingLibrary.BinaryBi
   } catch {
     return null;
   } finally {
+    Error.stackTraceLimit = stackTraceLimit;
     reader.reset();
   }
 }
@@ -103,12 +102,10 @@ export async function readBarcodes(rendered: RenderedPage, photographicEnhanceme
 
   checkpoint?.();
   const pixels = rendered.getPixels();
-  const luminance = new Uint8ClampedArray(rendered.width * rendered.height);
-  for (let pixel = 0, rgba = 0; pixel < luminance.length; pixel += 1, rgba += 4) {
-    const red = pixels[rgba] ?? 255;
-    const green = pixels[rgba + 1] ?? 255;
-    const blue = pixels[rgba + 2] ?? 255;
-    luminance[pixel] = (red + green * 2 + blue) / 4;
+  const pixelCount = rendered.width * rendered.height;
+  const luminance = new Uint8ClampedArray(pixelCount);
+  for (let pixel = 0, rgba = 0; pixel < pixelCount; pixel += 1, rgba += 4) {
+    luminance[pixel] = (pixels[rgba]! + pixels[rgba + 1]! * 2 + pixels[rgba + 2]!) / 4;
   }
   const source = new RGBLuminanceSource(luminance, rendered.width, rendered.height);
   const attempts: Array<{

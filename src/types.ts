@@ -1,12 +1,9 @@
 import type { AccessKeyComponents, AccessKeyDocumentTypeForModel, AccessKeyModel } from "./validation/access-key";
 
-/** A local path, HTTP(S) URL, or in-memory PDF, JPEG, or PNG byte source. */
 export type DocumentInput = string | ArrayBuffer | Uint8Array;
 
-/** Compatibility alias kept for existing consumers; prefer DocumentInput. */
 export type PdfInput = DocumentInput;
 
-/** Input format detected from the document bytes, never from names or headers. */
 export type DocumentFormat = "pdf" | "jpeg" | "png";
 
 export type PerformanceProfile = "fast" | "balanced" | "accurate";
@@ -20,27 +17,16 @@ export type ExtractionSource = "pdf-text" | "pdf-text-reconstructed" | "code128"
 export type ExtractionErrorCode = "INVALID_INPUT" | "FILE_NOT_FOUND" | "FILE_TOO_LARGE" | "DOWNLOAD_ERROR" | "INVALID_OPTIONS" | "INVALID_PDF" | "UNSUPPORTED_FORMAT" | "INVALID_IMAGE" | "PASSWORD_REQUIRED" | "TIMEOUT" | "ABORTED" | "RESOURCE_LIMIT" | "PROCESSING_ERROR";
 
 export interface ExtractOptions {
-  /** Processing/cost profile. Defaults to `balanced`. */
   performance?: PerformanceProfile;
-  /** Distinct visual render attempts, from 1 through 5. */
   passes?: number;
-  /** OCR policy. Profile defaults are `never`, `fallback`, and `fallback`. */
   ocr?: OcrMode;
-  /** Maximum pages processed from the beginning of the document. */
   maxPages?: number;
-  /** Maximum accepted input size. Defaults to 30 MiB. */
   maxFileSizeBytes?: number;
-  /** Maximum render area per page, after scale and rotation. */
   maxPixelsPerPage?: number;
-  /** Maximum decoded source-image area accepted from a PDF page or standalone image. */
   maxSourceImagePixels?: number;
-  /** Overall deadline in milliseconds. Network I/O aborts; CPU stages check cooperatively. */
   timeoutMs?: number;
-  /** Stop after the first validated access key. */
   stopAfterFirst?: boolean;
-  /** Optional request headers used only when the input is an HTTP(S) URL. */
   requestHeaders?: Readonly<Record<string, string>>;
-  /** Standard cancellation signal, including an in-progress URL download. */
   signal?: AbortSignal;
 }
 
@@ -63,24 +49,19 @@ export interface ExtractedAccessKey<TModel extends AccessKeyModel = AccessKeyMod
 export interface ExtractionMetadata {
   performance: PerformanceProfile;
   ocrMode: OcrMode;
-  /** Format detected from the input bytes. Absent when loading failed before detection. */
   inputFormat?: DocumentFormat;
   passesRequested: number;
   passesUsed: number;
   pagesTotal: number;
   pagesProcessed: number;
   pagesRendered: number;
-  /** Number of visual surfaces rendered, including bounded variants of one pass. */
   renderAttempts?: number;
   ocrPages: number;
   fileSizeBytes: number;
-  /** Original decoded width for JPEG/PNG inputs. */
   sourceImageWidth?: number;
-  /** Original decoded height for JPEG/PNG inputs. */
   sourceImageHeight?: number;
   maxPixelsPerPage: number;
   maxSourceImagePixels: number;
-  /** Full elapsed API/CLI duration in milliseconds, measured with a monotonic high-resolution clock. */
   durationMs: number;
   complete: boolean;
   confidenceVersion: "1.0.0";
